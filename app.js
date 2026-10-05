@@ -151,6 +151,49 @@ $("#login-form").addEventListener("submit", async (e) => {
 
 $("#btn-logout").addEventListener("click", () => sb.auth.signOut());
 
+// ---------------- Minha conta (trocar e-mail / senha) ----------------
+
+$("#btn-account").addEventListener("click", () => {
+  const emailInput = el("input", { type: "email", value: state.user?.email || "" });
+  const pwInput = el("input", { type: "password", placeholder: "Deixe em branco pra não trocar" });
+  const pwConfirm = el("input", { type: "password", placeholder: "Confirmar nova senha" });
+  const wrap = el("div", {}, [
+    el("label", {}, "E-mail"),
+    emailInput,
+    el("label", {}, "Nova senha"),
+    pwInput,
+    el("label", {}, "Confirmar nova senha"),
+    pwConfirm,
+    el("p", { class: "small muted" }, "Pra trocar só o e-mail, deixe as senhas em branco. Pra trocar só a senha, deixe o e-mail como está."),
+  ]);
+
+  openModal("Minha conta", wrap, async () => {
+    const newEmail = emailInput.value.trim();
+    const newPw = pwInput.value;
+    const newPwConfirm = pwConfirm.value;
+
+    if (newPw || newPwConfirm) {
+      if (newPw.length < 6) { toast("A senha precisa ter pelo menos 6 caracteres.", true); return false; }
+      if (newPw !== newPwConfirm) { toast("As senhas não coincidem.", true); return false; }
+    }
+
+    const updates = {};
+    if (newEmail && newEmail !== state.user.email) updates.email = newEmail;
+    if (newPw) updates.password = newPw;
+
+    if (!Object.keys(updates).length) { toast("Nada pra atualizar."); return; }
+
+    const { error } = await sb.auth.updateUser(updates);
+    if (error) { toast(error.message, true); return false; }
+
+    if (updates.email) {
+      toast("Confira seu e-mail atual e o novo pra confirmar a troca.");
+    } else {
+      toast("Senha atualizada.");
+    }
+  }, "Salvar");
+});
+
 // ---------------- Clients ----------------
 
 async function loadClients() {
