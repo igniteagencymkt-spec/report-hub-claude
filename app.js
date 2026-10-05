@@ -264,17 +264,15 @@ async function removeAccount(id) {
 }
 
 $("#btn-connect-account").addEventListener("click", () => {
+  const accInput = el("input", { type: "text", placeholder: "1234567890" });
+  const tokenInput = el("input", { type: "text", placeholder: "EAAG..." });
   const wrap = el("div", {}, [
     el("label", {}, "ID da conta de anúncio (sem o act_)"),
-    (() => { const i = el("input", { type: "text", placeholder: "1234567890" }); wrap_accountId = i; return i; })(),
+    accInput,
     el("label", {}, "Access token (Business Manager)"),
-    (() => { const i = el("input", { type: "text", placeholder: "EAAG..." }); wrap_token = i; return i; })(),
+    tokenInput,
     el("p", { class: "small muted" }, "Token de longa duração gerado no Business Manager (Graph API Explorer ou System User). Isso é temporário — assim que o login com Facebook estiver liberado, essa etapa some."),
   ]);
-  let wrap_accountId, wrap_token;
-  // re-grab refs since closures above ran during construction
-  const accInput = wrap.querySelectorAll("input")[0];
-  const tokenInput = wrap.querySelectorAll("input")[1];
 
   openModal("Conectar conta Meta Ads", wrap, async () => {
     const accountId = accInput.value.trim().replace(/^act_/, "");
