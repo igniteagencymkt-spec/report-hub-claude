@@ -75,7 +75,10 @@ function legendWithValues() {
     position: "bottom",
     labels: {
       color: "#16263d",
-      font: { size: 11 },
+      font: { size: 15, weight: "600" },
+      boxWidth: 16,
+      boxHeight: 16,
+      padding: 16,
       generateLabels(chart) {
         const data = chart.data;
         const meta = chart.getDatasetMeta(0);

@@ -301,12 +301,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
 /* ---------- Charts ---------- */
 .chart-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
   margin-bottom: 20px;
 }
 .chart-card { min-height: 0; }
-.chart-card canvas { max-height: 220px; }
+.chart-card canvas { max-height: 280px; }
 
 /* ---------- Region table ---------- */
 table.region-table { width: 100%; border-collapse: collapse; font-size: 14px; }
