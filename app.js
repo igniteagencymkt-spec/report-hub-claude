@@ -24,11 +24,69 @@ const METRIC_DEFS = [
   { key: "leads", label: "Leads" },
   { key: "cpl", label: "Custo por lead (CPL)" },
   { key: "ctr", label: "CTR" },
+  { key: "clicks", label: "Cliques no link" },
+  { key: "cpc", label: "CPC médio" },
+  { key: "cpm", label: "CPM médio" },
+  { key: "platform_breakdown", label: "Leads por plataforma" },
+  { key: "gender_breakdown", label: "Leads por gênero" },
+  { key: "age_breakdown", label: "Leads por faixa etária" },
+  { key: "leads_by_day", label: "Leads por dia (evolução)" },
   { key: "region_leads", label: "Leads por região" },
-  { key: "creative_thumbs", label: "Criativos (thumbs)" },
+  { key: "creative_thumbs", label: "Anúncios em destaque" },
   { key: "balance", label: "Saldo / fatura da conta" },
 ];
 const DEFAULT_METRICS = METRIC_DEFS.map((m) => m.key);
+const CHART_COLORS = ["#c9a66b", "#16263d", "#7fa6c9", "#e0bd85", "#1f9d6c", "#c0392b", "#64748b"];
+const chartInstances = {};
+
+function renderChart(canvasId, config) {
+  if (chartInstances[canvasId]) chartInstances[canvasId].destroy();
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  chartInstances[canvasId] = new Chart(ctx, config);
+}
+
+// ---------------- Datas (período atual x período anterior, pra comparação) ----------------
+
+function fmtDate(d) { return d.toISOString().slice(0, 10); }
+
+function getDateRange(datePreset) {
+  const today = new Date();
+  let since, until;
+  if (datePreset === "this_month") {
+    since = new Date(today.getFullYear(), today.getMonth(), 1);
+    until = today;
+  } else if (datePreset === "last_month") {
+    since = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    until = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else {
+    const days = { last_7d: 7, last_14d: 14, last_30d: 30, last_90d: 90 }[datePreset] || 30;
+    until = today;
+    since = new Date(today);
+    since.setDate(since.getDate() - (days - 1));
+  }
+  return { since: fmtDate(since), until: fmtDate(until) };
+}
+
+function getPreviousRange(since, until) {
+  const sinceD = new Date(since), untilD = new Date(until);
+  const diffDays = Math.round((untilD - sinceD) / 86400000) + 1;
+  const prevUntil = new Date(sinceD);
+  prevUntil.setDate(prevUntil.getDate() - 1);
+  const prevSince = new Date(prevUntil);
+  prevSince.setDate(prevSince.getDate() - (diffDays - 1));
+  return { since: fmtDate(prevSince), until: fmtDate(prevUntil) };
+}
+
+function deltaBadge(current, previous) {
+  if (previous == null || previous === 0) {
+    if (!current) return null;
+    return { text: "novo", up: true };
+  }
+  const pct = ((current - previous) / Math.abs(previous)) * 100;
+  if (Math.abs(pct) < 0.01) return { text: "0%", up: true };
+  return { text: `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`, up: pct > 0 };
+}
 
 let state = {
   user: null,
@@ -686,6 +744,13 @@ function sumActionValue(actions, type) {
   return found ? Number(found.value) : 0;
 }
 
+function platformLabel(p) {
+  return { facebook: "Facebook", instagram: "Instagram", audience_network: "Audience Network", messenger: "Messenger" }[p] || p;
+}
+function genderLabel(g) {
+  return { male: "Masculino", female: "Feminino", unknown: "Desconhecido" }[g] || g;
+}
+
 async function renderReport() {
   const body = $("#report-body");
   if (!state.accounts.length) {
@@ -712,17 +777,25 @@ async function renderReport() {
     reportLogo.classList.add("hidden");
   }
 
+  const range = getDateRange(datePreset);
+  const prevRange = getPreviousRange(range.since, range.until);
+
   try {
     let totalSpend = 0, totalLeads = 0, totalImpressions = 0, totalClicks = 0;
+    let prevSpend = 0, prevLeads = 0, prevImpressions = 0, prevClicks = 0;
     let currency = "BRL";
     let balances = [];
-    const regionMap = new Map(); // region -> {leads, spend}
+    const regionMap = new Map();
+    const platformMap = new Map();
+    const genderMap = new Map();
+    const ageMap = new Map();
+    const dailyMap = new Map();
     let creatives = [];
     const customEvents = state.reportConfig?.custom_events || [];
     const customTotals = new Map(customEvents.map((e) => [e.action_type, 0]));
 
     for (const acc of state.accounts) {
-      const [accInfo, insights, regionInsights, ads] = await Promise.all([
+      const [accInfo, insights, prevInsights, regionInsights, platformInsights, genderInsights, ageInsights, dailyInsights, ads] = await Promise.all([
         metaCall(acc.access_token, `act_${acc.account_id}`, {
           fields: "name,currency,balance,amount_spent,spend_cap",
         }),
@@ -730,17 +803,53 @@ async function renderReport() {
           date_preset: datePreset,
           fields: "spend,actions,impressions,clicks",
         }),
+        metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
+          time_range: JSON.stringify(prevRange),
+          fields: "spend,actions,impressions,clicks",
+        }).catch(() => ({ data: [] })),
         metrics.has("region_leads")
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
               date_preset: datePreset,
               breakdowns: "region",
-              fields: "spend,actions",
+              fields: "spend,actions,impressions",
               limit: 50,
+            })
+          : Promise.resolve({ data: [] }),
+        metrics.has("platform_breakdown")
+          ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
+              date_preset: datePreset,
+              breakdowns: "publisher_platform",
+              fields: "actions",
+              limit: 20,
+            })
+          : Promise.resolve({ data: [] }),
+        metrics.has("gender_breakdown")
+          ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
+              date_preset: datePreset,
+              breakdowns: "gender",
+              fields: "actions",
+              limit: 20,
+            })
+          : Promise.resolve({ data: [] }),
+        metrics.has("age_breakdown")
+          ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
+              date_preset: datePreset,
+              breakdowns: "age",
+              fields: "actions",
+              limit: 20,
+            })
+          : Promise.resolve({ data: [] }),
+        metrics.has("leads_by_day")
+          ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
+              date_preset: datePreset,
+              time_increment: 1,
+              fields: "actions",
+              limit: 500,
             })
           : Promise.resolve({ data: [] }),
         metrics.has("creative_thumbs")
           ? metaCall(acc.access_token, `act_${acc.account_id}/ads`, {
-              fields: "name,creative{thumbnail_url},insights.date_preset(" + datePreset + "){actions,spend}",
+              fields: "name,creative{thumbnail_url},insights.date_preset(" + datePreset + "){actions,spend,impressions,clicks,frequency}",
               effective_status: JSON.stringify(["ACTIVE"]),
               limit: 20,
             })
@@ -759,61 +868,181 @@ async function renderReport() {
         customTotals.set(ce.action_type, (customTotals.get(ce.action_type) || 0) + sumActionValue(row.actions, ce.action_type));
       }
 
+      const prow = (prevInsights.data && prevInsights.data[0]) || {};
+      prevSpend += Number(prow.spend || 0);
+      prevLeads += sumActionValue(prow.actions, "lead") || sumActionValue(prow.actions, "onsite_conversion.lead_grouped");
+      prevImpressions += Number(prow.impressions || 0);
+      prevClicks += Number(prow.clicks || 0);
+
       for (const r of regionInsights.data || []) {
         const leads = sumActionValue(r.actions, "lead") || sumActionValue(r.actions, "onsite_conversion.lead_grouped");
         if (!r.region) continue;
-        const cur = regionMap.get(r.region) || { leads: 0, spend: 0 };
+        const cur = regionMap.get(r.region) || { leads: 0, spend: 0, impressions: 0 };
         cur.leads += leads;
         cur.spend += Number(r.spend || 0);
+        cur.impressions += Number(r.impressions || 0);
         regionMap.set(r.region, cur);
+      }
+
+      for (const p of platformInsights.data || []) {
+        const leads = sumActionValue(p.actions, "lead") || sumActionValue(p.actions, "onsite_conversion.lead_grouped");
+        if (!p.publisher_platform || !leads) continue;
+        platformMap.set(p.publisher_platform, (platformMap.get(p.publisher_platform) || 0) + leads);
+      }
+      for (const g of genderInsights.data || []) {
+        const leads = sumActionValue(g.actions, "lead") || sumActionValue(g.actions, "onsite_conversion.lead_grouped");
+        if (!g.gender || !leads) continue;
+        genderMap.set(g.gender, (genderMap.get(g.gender) || 0) + leads);
+      }
+      for (const a of ageInsights.data || []) {
+        const leads = sumActionValue(a.actions, "lead") || sumActionValue(a.actions, "onsite_conversion.lead_grouped");
+        if (!a.age) continue;
+        ageMap.set(a.age, (ageMap.get(a.age) || 0) + leads);
+      }
+      for (const d of dailyInsights.data || []) {
+        const leads = sumActionValue(d.actions, "lead") || sumActionValue(d.actions, "onsite_conversion.lead_grouped");
+        if (!d.date_start) continue;
+        dailyMap.set(d.date_start, (dailyMap.get(d.date_start) || 0) + leads);
       }
 
       for (const ad of ads.data || []) {
         const adInsights = (ad.insights && ad.insights.data && ad.insights.data[0]) || {};
         const leads = sumActionValue(adInsights.actions, "lead") || sumActionValue(adInsights.actions, "onsite_conversion.lead_grouped");
+        const adSpend = Number(adInsights.spend || 0);
+        const adImpr = Number(adInsights.impressions || 0);
+        const adClicks = Number(adInsights.clicks || 0);
         creatives.push({
           name: ad.name,
           thumb: ad.creative && ad.creative.thumbnail_url,
           leads,
-          spend: Number(adInsights.spend || 0),
+          spend: adSpend,
+          impressions: adImpr,
+          clicks: adClicks,
+          frequency: adInsights.frequency != null ? Number(adInsights.frequency) : null,
+          ctr: adImpr > 0 ? (adClicks / adImpr) * 100 : null,
+          cpc: adClicks > 0 ? adSpend / adClicks : null,
+          cpm: adImpr > 0 ? (adSpend / adImpr) * 1000 : null,
         });
       }
     }
 
     const cpl = totalLeads > 0 ? totalSpend / totalLeads : null;
     const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : null;
+    const cpc = totalClicks > 0 ? totalSpend / totalClicks : null;
+    const cpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : null;
+    const prevCpl = prevLeads > 0 ? prevSpend / prevLeads : null;
+    const prevCtr = prevImpressions > 0 ? (prevClicks / prevImpressions) * 100 : null;
+    const prevCpc = prevClicks > 0 ? prevSpend / prevClicks : null;
+    const prevCpm = prevImpressions > 0 ? (prevSpend / prevImpressions) * 1000 : null;
+
     const regionsSorted = [...regionMap.entries()]
       .map(([region, v]) => ({ region, ...v }))
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 10);
     creatives.sort((a, b) => b.leads - a.leads);
-    creatives = creatives.slice(0, 8);
+    creatives = creatives.slice(0, 10);
+    const dailySorted = [...dailyMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const ageOrder = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
+    const agesSorted = [...ageMap.entries()].sort((a, b) => ageOrder.indexOf(a[0]) - ageOrder.indexOf(b[0]));
 
     body.innerHTML = "";
 
-    // Stat tiles
-    const tiles = [];
-    if (metrics.has("spend")) tiles.push(["Investimento", fmtMoney(totalSpend, currency)]);
-    if (metrics.has("leads")) tiles.push(["Leads", fmtNumber(totalLeads)]);
-    if (metrics.has("cpl")) tiles.push(["CPL", cpl != null ? fmtMoney(cpl, currency) : "—"]);
-    if (metrics.has("ctr")) tiles.push(["CTR", fmtPct(ctr)]);
+    // Stat tiles (com variação vs período anterior)
+    const tileDefs = [];
+    if (metrics.has("spend")) tileDefs.push(["Investimento", fmtMoney(totalSpend, currency), deltaBadge(totalSpend, prevSpend)]);
+    if (metrics.has("leads")) tileDefs.push(["Leads", fmtNumber(totalLeads), deltaBadge(totalLeads, prevLeads)]);
+    if (metrics.has("cpl")) tileDefs.push(["CPL", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl) : null]);
+    if (metrics.has("ctr")) tileDefs.push(["CTR", fmtPct(ctr), ctr != null && prevCtr != null ? deltaBadge(ctr, prevCtr) : null]);
+    if (metrics.has("clicks")) tileDefs.push(["Cliques no link", fmtNumber(totalClicks), deltaBadge(totalClicks, prevClicks)]);
+    if (metrics.has("cpc")) tileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc) : null]);
+    if (metrics.has("cpm")) tileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm) : null]);
     for (const ce of customEvents) {
-      tiles.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0)]);
+      tileDefs.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0), null]);
     }
-    if (tiles.length) {
+    if (tileDefs.length) {
       const grid = el("div", { class: "stat-grid" });
-      for (const [label, value] of tiles) {
+      for (const [label, value, delta] of tileDefs) {
         grid.appendChild(el("div", { class: "stat-tile" }, [
           el("div", { class: "stat-label" }, label),
           el("div", { class: "stat-value" }, value),
+          delta ? el("div", { class: "stat-delta " + (delta.up ? "up" : "down") }, (delta.up ? "▲ " : "▼ ") + delta.text) : null,
         ]));
       }
       body.appendChild(grid);
     }
 
+    // Gráficos: plataforma (donut), gênero (donut)
+    const smallCharts = [];
+    if (metrics.has("platform_breakdown") && platformMap.size) {
+      smallCharts.push({ id: "chart-platform", title: "Leads por plataforma", labels: [...platformMap.keys()].map(platformLabel), data: [...platformMap.values()], type: "doughnut" });
+    }
+    if (metrics.has("gender_breakdown") && genderMap.size) {
+      smallCharts.push({ id: "chart-gender", title: "Leads por gênero", labels: [...genderMap.keys()].map(genderLabel), data: [...genderMap.values()], type: "doughnut" });
+    }
+    if (smallCharts.length) {
+      const grid = el("div", { class: "chart-grid" });
+      for (const c of smallCharts) {
+        const card = el("div", { class: "card chart-card" }, [
+          el("div", { class: "card-title" }, c.title),
+          el("canvas", { id: c.id }),
+        ]);
+        grid.appendChild(card);
+      }
+      body.appendChild(grid);
+      for (const c of smallCharts) {
+        renderChart(c.id, {
+          type: "doughnut",
+          data: { labels: c.labels, datasets: [{ data: c.data, backgroundColor: CHART_COLORS }] },
+          options: { animation: false, plugins: { legend: { position: "bottom", labels: { color: "#16263d", font: { size: 11 } } } } },
+        });
+      }
+    }
+
+    // Gráfico: leads por dia (linha)
+    if (metrics.has("leads_by_day") && dailySorted.length) {
+      const card = el("div", { class: "card chart-card" }, [
+        el("div", { class: "card-title" }, "Leads por dia"),
+        el("canvas", { id: "chart-daily" }),
+      ]);
+      body.appendChild(card);
+      renderChart("chart-daily", {
+        type: "line",
+        data: {
+          labels: dailySorted.map(([d]) => d.slice(5).split("-").reverse().join("/")),
+          datasets: [{ label: "Leads", data: dailySorted.map(([, v]) => v), borderColor: "#c9a66b", backgroundColor: "rgba(201,166,107,0.15)", tension: 0.35, fill: true }],
+        },
+        options: {
+          animation: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { ticks: { color: "#64748b" } }, y: { beginAtZero: true, ticks: { color: "#64748b" } } },
+        },
+      });
+    }
+
+    // Gráfico: leads por faixa etária (barra)
+    if (metrics.has("age_breakdown") && agesSorted.length) {
+      const card = el("div", { class: "card chart-card" }, [
+        el("div", { class: "card-title" }, "Leads por faixa etária"),
+        el("canvas", { id: "chart-age" }),
+      ]);
+      body.appendChild(card);
+      renderChart("chart-age", {
+        type: "bar",
+        data: {
+          labels: agesSorted.map(([a]) => a),
+          datasets: [{ label: "Leads", data: agesSorted.map(([, v]) => v), backgroundColor: "#c9a66b" }],
+        },
+        options: {
+          animation: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { ticks: { color: "#64748b" } }, y: { beginAtZero: true, ticks: { color: "#64748b" } } },
+        },
+      });
+    }
+
     // Saldo
     if (metrics.has("balance")) {
-      const wrap = el("div", { class: "card", style: "background:var(--navy-light); margin-bottom:20px;" });
+      const wrap = el("div", { class: "card" });
       wrap.appendChild(el("div", { class: "card-title" }, "Saldo / fatura"));
       for (const b of balances) {
         const spentMinor = Number(b.amount_spent || 0);
@@ -838,13 +1067,18 @@ async function renderReport() {
         table.appendChild(el("tr", {}, [
           el("th", {}, "Região"),
           el("th", {}, "Leads"),
+          el("th", {}, "Impressões"),
+          el("th", {}, "CPM"),
           el("th", {}, "Investimento"),
         ]));
         for (const r of regionsSorted) {
           const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
+          const regionCpm = r.impressions > 0 ? (r.spend / r.impressions) * 1000 : null;
           table.appendChild(el("tr", {}, [
             el("td", {}, r.region),
             el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
+            el("td", {}, fmtNumber(r.impressions)),
+            el("td", {}, regionCpm != null ? fmtMoney(regionCpm, currency) : "—"),
             el("td", {}, fmtMoney(r.spend, currency)),
           ]));
         }
@@ -853,24 +1087,42 @@ async function renderReport() {
       body.appendChild(card);
     }
 
-    // Creatives
+    // Anúncios em destaque
     if (metrics.has("creative_thumbs")) {
       const card = el("div", { class: "card" });
-      card.appendChild(el("div", { class: "card-title" }, "Criativos em destaque (por leads)"));
+      card.appendChild(el("div", { class: "card-title" }, "Anúncios em destaque"));
       if (!creatives.length) {
         card.appendChild(el("div", { class: "empty-state" }, "Nenhum anúncio ativo com dados no período."));
       } else {
-        const grid = el("div", { class: "creative-grid" });
+        const table = el("table", { class: "region-table" });
+        table.appendChild(el("tr", {}, [
+          el("th", {}, "Anúncio"),
+          el("th", {}, "Leads"),
+          el("th", {}, "Custo/lead"),
+          el("th", {}, "Investimento"),
+          el("th", {}, "CTR"),
+          el("th", {}, "CPC"),
+          el("th", {}, "CPM"),
+          el("th", {}, "Frequência"),
+        ]));
         for (const c of creatives) {
-          const cc = el("div", { class: "creative-card" });
-          if (c.thumb) cc.appendChild(el("img", { src: c.thumb, alt: c.name || "" }));
-          cc.appendChild(el("div", { class: "cc-body" }, [
-            el("div", { class: "cc-name" }, c.name || "—"),
-            el("div", { class: "cc-leads" }, `${fmtNumber(c.leads)} leads`),
+          const costPerLead = c.leads > 0 ? c.spend / c.leads : null;
+          const nameCell = el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;" }, [
+            c.thumb ? el("img", { src: c.thumb, alt: "", style: "width:36px;height:36px;border-radius:6px;object-fit:cover;flex-shrink:0;" }) : null,
+            el("span", { style: "font-size:13px;" }, c.name || "—"),
+          ]);
+          table.appendChild(el("tr", {}, [
+            el("td", {}, nameCell),
+            el("td", {}, fmtNumber(c.leads)),
+            el("td", {}, costPerLead != null ? fmtMoney(costPerLead, currency) : "—"),
+            el("td", {}, fmtMoney(c.spend, currency)),
+            el("td", {}, fmtPct(c.ctr)),
+            el("td", {}, c.cpc != null ? fmtMoney(c.cpc, currency) : "—"),
+            el("td", {}, c.cpm != null ? fmtMoney(c.cpm, currency) : "—"),
+            el("td", {}, c.frequency != null ? c.frequency.toFixed(2) : "—"),
           ]));
-          grid.appendChild(cc);
         }
-        card.appendChild(grid);
+        card.appendChild(table);
       }
       body.appendChild(card);
     }

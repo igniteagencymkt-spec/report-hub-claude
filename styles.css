@@ -266,6 +266,20 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
 }
 .stat-value.danger { color: var(--danger); }
 .stat-value.good { color: var(--good); }
+.stat-prev { font-size: 11px; color: var(--mist); margin-top: 6px; }
+.stat-delta { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; margin-left: 6px; }
+.stat-delta.up { color: var(--good); background: rgba(31,157,108,0.12); }
+.stat-delta.down { color: var(--danger); background: rgba(192,57,43,0.1); }
+
+/* ---------- Charts ---------- */
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.chart-card { min-height: 0; }
+.chart-card canvas { max-height: 220px; }
 
 /* ---------- Region table ---------- */
 table.region-table { width: 100%; border-collapse: collapse; font-size: 14px; }
