@@ -774,7 +774,15 @@ $("#btn-settings").addEventListener("click", async () => {
 
   const customWrap = el("div", {}, [el("p", { class: "small muted" }, "Procurando eventos de conversão desta conta...")]);
 
+  const client = state.clients.find((c) => c.id === state.currentClientId);
+  const titleInput = el("input", { type: "text", placeholder: `Padrão: ${client?.name || "Cliente"} — Relatório de performance`, value: state.reportConfig?.report_title || "" });
+  const subtitleInput = el("input", { type: "text", placeholder: "Padrão: Período: (data selecionada)", value: state.reportConfig?.report_subtitle || "" });
+
   openModal("Métricas do relatório", el("div", {}, [
+    el("label", {}, "Título do relatório"),
+    titleInput,
+    el("label", {}, "Subtítulo do relatório"),
+    subtitleInput,
     el("div", { class: "row", style: "margin-bottom:12px;" }, [btnAll, btnNone]),
     grid,
     el("label", { style: "margin-top:4px;" }, "Eventos personalizados (pixel / CAPI) detectados nesta conta"),
@@ -795,6 +803,8 @@ $("#btn-settings").addEventListener("click", async () => {
       client_id: state.currentClientId,
       metrics,
       custom_events: customEvents,
+      report_title: titleInput.value.trim() || null,
+      report_subtitle: subtitleInput.value.trim() || null,
     };
     let error;
     if (state.reportConfig?.id) {
@@ -898,8 +908,9 @@ async function renderReport() {
   const periodLabel = datePreset === "custom"
     ? `${fmtBR(range.since)} a ${fmtBR(range.until)}`
     : (periodLabels[datePreset] || datePreset);
-  $("#report-title").textContent = client?.name ? `${client.name} — Relatório de performance` : "Relatório de performance";
-  $("#report-subtitle").textContent = `Período: ${periodLabel}`;
+  $("#report-title").textContent = state.reportConfig?.report_title
+    || (client?.name ? `${client.name} — Relatório de performance` : "Relatório de performance");
+  $("#report-subtitle").textContent = state.reportConfig?.report_subtitle || `Período: ${periodLabel}`;
   const timeRangeParam = JSON.stringify(range);
 
   try {

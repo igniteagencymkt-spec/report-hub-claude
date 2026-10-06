@@ -18,6 +18,12 @@
 
 * { box-sizing: border-box; }
 
+/* Trava o tema em claro mesmo quando o navegador tenta "escurecer" a página
+   automaticamente (ex.: recurso de Forçar modo escuro do Opera GX/Chrome).
+   Sem isso o navegador reescreve as cores por conta própria e inverte o
+   layout, mesmo o CSS já sendo 100% light. */
+html { color-scheme: light only; }
+
 html, body {
   margin: 0;
   padding: 0;
