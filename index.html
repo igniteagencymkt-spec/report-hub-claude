@@ -76,7 +76,14 @@
               <option value="last_90d">Últimos 90 dias</option>
               <option value="this_month">Este mês</option>
               <option value="last_month">Mês passado</option>
+              <option value="custom">Personalizado...</option>
             </select>
+            <span id="custom-date-wrap" class="row hidden" style="gap:6px;">
+              <input id="custom-date-since" type="date" style="width:auto;margin-bottom:0;" />
+              <span class="small muted">até</span>
+              <input id="custom-date-until" type="date" style="width:auto;margin-bottom:0;" />
+              <button class="btn btn-sm" id="btn-apply-custom-date" type="button">Aplicar</button>
+            </span>
             <button class="btn" id="btn-settings">Métricas</button>
             <button class="btn btn-primary" id="btn-export-pdf">Baixar PDF</button>
           </div>

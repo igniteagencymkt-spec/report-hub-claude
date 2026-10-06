@@ -51,6 +51,12 @@ function renderChart(canvasId, config) {
 function fmtDate(d) { return d.toISOString().slice(0, 10); }
 
 function getDateRange(datePreset) {
+  if (datePreset === "custom") {
+    const since = state.reportConfig?.custom_since;
+    const until = state.reportConfig?.custom_until;
+    if (since && until) return { since, until };
+    // sem datas escolhidas ainda — cai pros últimos 30 dias até o usuário aplicar
+  }
   const today = new Date();
   let since, until;
   if (datePreset === "this_month") {
@@ -346,7 +352,15 @@ async function selectClient(clientId) {
   }
   await Promise.all([loadAccounts(clientId), loadReportConfig(clientId)]);
   renderAccounts();
-  $("#date-preset-select").value = state.reportConfig?.date_preset || "last_30d";
+  const preset = state.reportConfig?.date_preset || "last_30d";
+  $("#date-preset-select").value = preset;
+  if (preset === "custom") {
+    $("#custom-date-wrap").classList.remove("hidden");
+    if (state.reportConfig?.custom_since) $("#custom-date-since").value = state.reportConfig.custom_since;
+    if (state.reportConfig?.custom_until) $("#custom-date-until").value = state.reportConfig.custom_until;
+  } else {
+    $("#custom-date-wrap").classList.add("hidden");
+  }
   await renderReport();
 }
 
@@ -419,14 +433,15 @@ $("#btn-edit-client").addEventListener("click", () => {
   }, "Salvar");
 });
 
-$("#date-preset-select").addEventListener("change", async (e) => {
-  const datePreset = e.target.value;
+async function saveDatePreset(datePreset, customSince, customUntil) {
   const payload = {
     user_id: state.user.id,
     client_id: state.currentClientId,
     metrics: state.reportConfig?.metrics || DEFAULT_METRICS,
     custom_events: state.reportConfig?.custom_events || [],
     date_preset: datePreset,
+    custom_since: customSince ?? state.reportConfig?.custom_since ?? null,
+    custom_until: customUntil ?? state.reportConfig?.custom_until ?? null,
   };
   let error;
   if (state.reportConfig?.id) {
@@ -437,6 +452,29 @@ $("#date-preset-select").addEventListener("change", async (e) => {
   if (error) { toast(error.message, true); return; }
   await loadReportConfig(state.currentClientId);
   await renderReport();
+}
+
+$("#date-preset-select").addEventListener("change", async (e) => {
+  const datePreset = e.target.value;
+  const customWrap = $("#custom-date-wrap");
+  if (datePreset === "custom") {
+    customWrap.classList.remove("hidden");
+    const since = state.reportConfig?.custom_since;
+    const until = state.reportConfig?.custom_until;
+    if (since) $("#custom-date-since").value = since;
+    if (until) $("#custom-date-until").value = until;
+    return; // espera o usuário escolher as datas e clicar em "Aplicar"
+  }
+  customWrap.classList.add("hidden");
+  await saveDatePreset(datePreset, null, null);
+});
+
+$("#btn-apply-custom-date").addEventListener("click", async () => {
+  const since = $("#custom-date-since").value;
+  const until = $("#custom-date-until").value;
+  if (!since || !until) { toast("Escolha as duas datas.", true); return; }
+  if (since > until) { toast("A data inicial precisa ser antes da final.", true); return; }
+  await saveDatePreset("custom", since, until);
 });
 
 // ---------------- Connected accounts ----------------
@@ -624,7 +662,7 @@ async function loadReportConfig(clientId) {
     .limit(1)
     .maybeSingle();
   if (error) { toast(error.message, true); return; }
-  state.reportConfig = data || { metrics: DEFAULT_METRICS, date_preset: "last_30d", custom_events: [] };
+  state.reportConfig = data || { metrics: DEFAULT_METRICS, date_preset: "last_30d", custom_events: [], custom_since: null, custom_until: null };
 }
 
 // Eventos de conversão (pixel/CAPI/custom) além do "lead" padrão — nome varia por cliente,
@@ -767,7 +805,6 @@ async function renderReport() {
     last_7d: "últimos 7 dias", last_14d: "últimos 14 dias", last_30d: "últimos 30 dias",
     last_90d: "últimos 90 dias", this_month: "este mês", last_month: "mês passado",
   };
-  $("#report-period").textContent = periodLabels[datePreset] || datePreset;
   const client = state.clients.find((c) => c.id === state.currentClientId);
   const reportLogo = $("#report-logo");
   if (client?.logo_url) {
@@ -779,6 +816,11 @@ async function renderReport() {
 
   const range = getDateRange(datePreset);
   const prevRange = getPreviousRange(range.since, range.until);
+  const fmtBR = (iso) => iso.split("-").reverse().join("/");
+  $("#report-period").textContent = datePreset === "custom"
+    ? `${fmtBR(range.since)} a ${fmtBR(range.until)}`
+    : (periodLabels[datePreset] || datePreset);
+  const timeRangeParam = JSON.stringify(range);
 
   try {
     let totalSpend = 0, totalLeads = 0, totalImpressions = 0, totalClicks = 0;
@@ -800,7 +842,7 @@ async function renderReport() {
           fields: "name,currency,balance,amount_spent,spend_cap",
         }),
         metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
-          date_preset: datePreset,
+          time_range: timeRangeParam,
           fields: "spend,actions,impressions,clicks",
         }),
         metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
@@ -809,7 +851,7 @@ async function renderReport() {
         }).catch(() => ({ data: [] })),
         metrics.has("region_leads")
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
-              date_preset: datePreset,
+              time_range: timeRangeParam,
               breakdowns: "region",
               fields: "spend,actions,impressions",
               limit: 50,
@@ -817,7 +859,7 @@ async function renderReport() {
           : Promise.resolve({ data: [] }),
         metrics.has("platform_breakdown")
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
-              date_preset: datePreset,
+              time_range: timeRangeParam,
               breakdowns: "publisher_platform",
               fields: "actions",
               limit: 20,
@@ -825,7 +867,7 @@ async function renderReport() {
           : Promise.resolve({ data: [] }),
         metrics.has("gender_breakdown")
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
-              date_preset: datePreset,
+              time_range: timeRangeParam,
               breakdowns: "gender",
               fields: "actions",
               limit: 20,
@@ -833,7 +875,7 @@ async function renderReport() {
           : Promise.resolve({ data: [] }),
         metrics.has("age_breakdown")
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
-              date_preset: datePreset,
+              time_range: timeRangeParam,
               breakdowns: "age",
               fields: "actions",
               limit: 20,
@@ -841,7 +883,7 @@ async function renderReport() {
           : Promise.resolve({ data: [] }),
         metrics.has("leads_by_day")
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
-              date_preset: datePreset,
+              time_range: timeRangeParam,
               time_increment: 1,
               fields: "actions",
               limit: 500,
@@ -849,7 +891,7 @@ async function renderReport() {
           : Promise.resolve({ data: [] }),
         metrics.has("creative_thumbs")
           ? metaCall(acc.access_token, `act_${acc.account_id}/ads`, {
-              fields: "name,creative{thumbnail_url},insights.date_preset(" + datePreset + "){actions,spend,impressions,clicks,frequency}",
+              fields: `name,creative{thumbnail_url},insights.time_range(${timeRangeParam}){actions,spend,impressions,clicks,frequency}`,
               effective_status: JSON.stringify(["ACTIVE"]),
               limit: 20,
             })
