@@ -6,6 +6,19 @@
 const { createClient } = supabase;
 const sb = createClient(window.HUB_CONFIG.SUPABASE_URL, window.HUB_CONFIG.SUPABASE_ANON_KEY);
 
+// Se esta página foi aberta como popup de login do Facebook, ela volta pra cá
+// com ?code=... na URL. Repassa o code pra janela que abriu o popup e fecha.
+(function handleFacebookOAuthCallback() {
+  if (window.opener && /[?&]code=/.test(window.location.search)) {
+    const params = new URLSearchParams(window.location.search);
+    window.opener.postMessage(
+      { type: "fb-oauth-code", code: params.get("code"), state: params.get("state") },
+      window.location.origin
+    );
+    window.close();
+  }
+})();
+
 const METRIC_DEFS = [
   { key: "spend", label: "Investimento" },
   { key: "leads", label: "Leads" },
@@ -307,6 +320,14 @@ async function removeAccount(id) {
 }
 
 $("#btn-connect-account").addEventListener("click", () => {
+  if (window.HUB_CONFIG.FB_APP_ID) {
+    connectViaFacebookLogin();
+  } else {
+    connectViaManualToken();
+  }
+});
+
+function connectViaManualToken() {
   const accInput = el("input", { type: "text", placeholder: "1234567890" });
   const tokenInput = el("input", { type: "text", placeholder: "EAAG..." });
   const wrap = el("div", {}, [
@@ -314,33 +335,122 @@ $("#btn-connect-account").addEventListener("click", () => {
     accInput,
     el("label", {}, "Access token (Business Manager)"),
     tokenInput,
-    el("p", { class: "small muted" }, "Token de longa duração gerado no Business Manager (Graph API Explorer ou System User). Isso é temporário — assim que o login com Facebook estiver liberado, essa etapa some."),
+    el("p", { class: "small muted" }, "Token de longa duração gerado no Business Manager (Graph API Explorer ou System User)."),
   ]);
 
-  openModal("Conectar conta Meta Ads", wrap, async () => {
+  openModal("Conectar conta Meta Ads (token manual)", wrap, async () => {
     const accountId = accInput.value.trim().replace(/^act_/, "");
     const token = tokenInput.value.trim();
     if (!accountId || !token) { toast("Preencha os dois campos.", true); return false; }
     try {
       const info = await metaCall(token, `act_${accountId}`, { fields: "name,currency" });
-      const { error } = await sb.from("hub_connected_accounts").insert({
-        user_id: state.user.id,
-        client_id: state.currentClientId,
-        account_id: accountId,
-        account_name: info.name || null,
-        access_token: token,
-      });
-      if (error) throw error;
-      toast(`Conta "${info.name || accountId}" conectada.`);
-      await loadAccounts(state.currentClientId);
-      renderAccounts();
-      await renderReport();
+      await saveConnectedAccount(accountId, info.name, token);
     } catch (err) {
       toast(err.message || "Não consegui validar esse token/conta.", true);
       return false;
     }
   }, "Conectar");
-});
+}
+
+async function saveConnectedAccount(accountId, accountName, token) {
+  const { error } = await sb.from("hub_connected_accounts").insert({
+    user_id: state.user.id,
+    client_id: state.currentClientId,
+    account_id: accountId,
+    account_name: accountName || null,
+    access_token: token,
+  });
+  if (error) throw error;
+  toast(`Conta "${accountName || accountId}" conectada.`);
+  await loadAccounts(state.currentClientId);
+  renderAccounts();
+  await renderReport();
+}
+
+// ---- Login real com Facebook (só você loga — nunca o cliente) ----
+// Acesso Padrão da Meta: funciona porque quem autentica é o admin deste app.
+async function connectViaFacebookLogin() {
+  const redirectUri = window.location.origin + window.location.pathname;
+  const oauthState = Math.random().toString(36).slice(2);
+  const scope = "ads_read,business_management";
+  const url =
+    `https://www.facebook.com/${window.HUB_CONFIG.FB_API_VERSION}/dialog/oauth` +
+    `?client_id=${encodeURIComponent(window.HUB_CONFIG.FB_APP_ID)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&state=${oauthState}&response_type=code&scope=${encodeURIComponent(scope)}`;
+
+  const popup = window.open(url, "fb-login", "width=600,height=720");
+  if (!popup) { toast("O navegador bloqueou o popup. Permita popups pra este site e tente de novo.", true); return; }
+
+  let code;
+  try {
+    code = await new Promise((resolve, reject) => {
+      function onMsg(e) {
+        if (e.origin !== window.location.origin) return;
+        if (e.data && e.data.type === "fb-oauth-code") {
+          window.removeEventListener("message", onMsg);
+          clearInterval(watcher);
+          if (e.data.state !== oauthState) { reject(new Error("Login inválido (state não bate).")); return; }
+          if (!e.data.code) { reject(new Error("Login cancelado ou sem permissão concedida.")); return; }
+          resolve(e.data.code);
+        }
+      }
+      window.addEventListener("message", onMsg);
+      const watcher = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(watcher);
+          window.removeEventListener("message", onMsg);
+          reject(new Error("Janela de login fechada antes de concluir."));
+        }
+      }, 500);
+    });
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+
+  try {
+    toast("Login feito. Buscando suas contas de anúncio...");
+    const { data, error } = await sb.functions.invoke("meta-oauth-exchange", {
+      body: { code, redirect_uri: redirectUri },
+    });
+    if (error) throw new Error(error.message || "Falha ao trocar o código pelo token.");
+    if (data && data.error) throw new Error(data.error);
+    const token = data.access_token;
+
+    const accounts = await metaCall(token, "me/adaccounts", { fields: "name,account_id,currency", limit: 200 });
+    if (!accounts.data || !accounts.data.length) {
+      toast("Login funcionou, mas não encontrei nenhuma conta de anúncio nesse usuário.", true);
+      return;
+    }
+    openAccountPicker(token, accounts.data);
+  } catch (err) {
+    toast(err.message || "Não consegui concluir o login com Facebook.", true);
+  }
+}
+
+function openAccountPicker(token, accounts) {
+  const select = el("select", {});
+  for (const acc of accounts) {
+    const id = String(acc.account_id).replace(/^act_/, "");
+    select.appendChild(el("option", { value: id }, `${acc.name || id} (${id})`));
+  }
+  const wrap = el("div", {}, [
+    el("label", {}, "Conta de anúncio"),
+    select,
+    el("p", { class: "small muted" }, "Contas que o seu login tem acesso. Escolha a do cliente."),
+  ]);
+  openModal("Escolher conta de anúncio", wrap, async () => {
+    const accountId = select.value;
+    const chosen = accounts.find((a) => String(a.account_id).replace(/^act_/, "") === accountId);
+    try {
+      await saveConnectedAccount(accountId, chosen && chosen.name, token);
+    } catch (err) {
+      toast(err.message || "Não consegui salvar essa conta.", true);
+      return false;
+    }
+  }, "Conectar");
+}
 
 // ---------------- Report config (métricas) ----------------
 
