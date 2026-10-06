@@ -208,6 +208,27 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
   padding: 24px;
   margin-bottom: 20px;
   box-shadow: 0 1px 2px rgba(16, 30, 54, 0.04);
+  overflow: hidden; /* conteúdo interno (canvas, imagens) nunca forma "canto quadrado" saindo do card arredondado */
+}
+
+/* ---------- Título do relatório (fica dentro da área exportada em PDF) ---------- */
+.report-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.report-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 2px;
+}
+.report-subtitle {
+  font-size: 13px;
+  color: var(--mist);
+  margin: 0;
 }
 .card-title {
   font-family: var(--font-display);
@@ -242,7 +263,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
 /* ---------- Metric stats ---------- */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 14px;
   margin-bottom: 24px;
 }
@@ -251,6 +272,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px 18px;
+  overflow: hidden; /* rede de segurança: nunca deixa o valor vazar pra fora do box arredondado */
 }
 .stat-label {
   font-size: 11px;
@@ -261,10 +283,13 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
 }
 .stat-value {
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 21px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
+  line-height: 1.2;
+  overflow-wrap: anywhere; /* "R$ 10.155,47" tem espaço fixo (não-quebrável) do Intl.NumberFormat;
+                               isso força a quebra mesmo assim, em vez de estourar o card */
 }
 .stat-value.danger { color: var(--danger); }
 .stat-value.good { color: var(--good); }

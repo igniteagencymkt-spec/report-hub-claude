@@ -892,9 +892,11 @@ async function renderReport() {
   const range = getDateRange(datePreset);
   const prevRange = getPreviousRange(range.since, range.until);
   const fmtBR = (iso) => iso.split("-").reverse().join("/");
-  $("#report-period").textContent = datePreset === "custom"
+  const periodLabel = datePreset === "custom"
     ? `${fmtBR(range.since)} a ${fmtBR(range.until)}`
     : (periodLabels[datePreset] || datePreset);
+  $("#report-title").textContent = client?.name ? `${client.name} — Relatório de performance` : "Relatório de performance";
+  $("#report-subtitle").textContent = `Período: ${periodLabel}`;
   const timeRangeParam = JSON.stringify(range);
 
   try {
@@ -1059,7 +1061,7 @@ async function renderReport() {
     const regionsSorted = [...regionMap.entries()]
       .map(([region, v]) => ({ region, ...v }))
       .sort((a, b) => b.leads - a.leads)
-      .slice(0, 10);
+      .slice(0, 30); // Brasil tem 27 UFs; a folga cobre eventuais regiões extras (ex. "Desconhecido")
     creatives.sort((a, b) => b.leads - a.leads);
     creatives = creatives.slice(0, 5);
     const dailySorted = [...dailyMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
@@ -1191,41 +1193,6 @@ async function renderReport() {
       });
     }
 
-    // Region table
-    if (metrics.has("region_leads")) {
-      const card = el("div", { class: "card" });
-      card.appendChild(el("div", { class: "card-title" }, "Regiões com mais leads"));
-      if (!regionsSorted.length) {
-        card.appendChild(el("div", { class: "empty-state" }, "Sem dados de região no período."));
-      } else {
-        const maxLeads = Math.max(...regionsSorted.map((r) => r.leads), 1);
-        const table = el("table", { class: "region-table" });
-        table.appendChild(el("tr", {}, [
-          el("th", {}, "Região"),
-          el("th", {}, "Leads"),
-          el("th", {}, "Custo por lead"),
-          el("th", {}, "Cliques no link"),
-          el("th", {}, "Custo por clique"),
-          el("th", {}, "Investimento"),
-        ]));
-        for (const r of regionsSorted) {
-          const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
-          const regionCpl = r.leads > 0 ? r.spend / r.leads : null;
-          const regionCpc = r.clicks > 0 ? r.spend / r.clicks : null;
-          table.appendChild(el("tr", {}, [
-            el("td", {}, r.region),
-            el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
-            el("td", {}, regionCpl != null ? fmtMoney(regionCpl, currency) : "—"),
-            el("td", {}, fmtNumber(r.clicks)),
-            el("td", {}, regionCpc != null ? fmtMoney(regionCpc, currency) : "—"),
-            el("td", {}, fmtMoney(r.spend, currency)),
-          ]));
-        }
-        card.appendChild(table);
-      }
-      body.appendChild(card);
-    }
-
     // Anúncios em destaque
     if (metrics.has("creative_thumbs")) {
       const card = el("div", { class: "card" });
@@ -1259,6 +1226,41 @@ async function renderReport() {
             el("td", {}, c.cpc != null ? fmtMoney(c.cpc, currency) : "—"),
             el("td", {}, c.cpm != null ? fmtMoney(c.cpm, currency) : "—"),
             el("td", {}, c.frequency != null ? c.frequency.toFixed(2) : "—"),
+          ]));
+        }
+        card.appendChild(table);
+      }
+      body.appendChild(card);
+    }
+
+    // Region table — sempre por último, com todos os estados (Brasil tem 27 UFs)
+    if (metrics.has("region_leads")) {
+      const card = el("div", { class: "card" });
+      card.appendChild(el("div", { class: "card-title" }, "Leads por região"));
+      if (!regionsSorted.length) {
+        card.appendChild(el("div", { class: "empty-state" }, "Sem dados de região no período."));
+      } else {
+        const maxLeads = Math.max(...regionsSorted.map((r) => r.leads), 1);
+        const table = el("table", { class: "region-table" });
+        table.appendChild(el("tr", {}, [
+          el("th", {}, "Região"),
+          el("th", {}, "Leads"),
+          el("th", {}, "Custo por lead"),
+          el("th", {}, "Cliques no link"),
+          el("th", {}, "Custo por clique"),
+          el("th", {}, "Investimento"),
+        ]));
+        for (const r of regionsSorted) {
+          const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
+          const regionCpl = r.leads > 0 ? r.spend / r.leads : null;
+          const regionCpc = r.clicks > 0 ? r.spend / r.clicks : null;
+          table.appendChild(el("tr", {}, [
+            el("td", {}, r.region),
+            el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
+            el("td", {}, regionCpl != null ? fmtMoney(regionCpl, currency) : "—"),
+            el("td", {}, fmtNumber(r.clicks)),
+            el("td", {}, regionCpc != null ? fmtMoney(regionCpc, currency) : "—"),
+            el("td", {}, fmtMoney(r.spend, currency)),
           ]));
         }
         card.appendChild(table);
