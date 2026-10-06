@@ -279,11 +279,87 @@ async function selectClient(clientId) {
   $("#view-empty").classList.add("hidden");
   $("#view-client").classList.remove("hidden");
   $("#client-name").textContent = client.name;
+  const logoImg = $("#client-logo");
+  if (client.logo_url) {
+    logoImg.src = client.logo_url;
+    logoImg.classList.remove("hidden");
+  } else {
+    logoImg.classList.add("hidden");
+  }
   await Promise.all([loadAccounts(clientId), loadReportConfig(clientId)]);
   renderAccounts();
   $("#date-preset-select").value = state.reportConfig?.date_preset || "last_30d";
   await renderReport();
 }
+
+// ---------------- Editar / excluir cliente + logo ----------------
+
+$("#btn-edit-client").addEventListener("click", () => {
+  const client = state.clients.find((c) => c.id === state.currentClientId);
+  if (!client) return;
+
+  const nameInput = el("input", { type: "text", value: client.name });
+  const fileInput = el("input", { type: "file", accept: "image/*" });
+  const preview = el("img", {
+    src: client.logo_url || "",
+    style: `width:64px;height:64px;border-radius:8px;object-fit:cover;border:1px solid var(--border);margin-bottom:12px;${client.logo_url ? "" : "display:none;"}`,
+  });
+  fileInput.addEventListener("change", () => {
+    const f = fileInput.files[0];
+    if (!f) return;
+    preview.src = URL.createObjectURL(f);
+    preview.style.display = "block";
+  });
+
+  const deleteBtn = el("button", { class: "btn btn-danger btn-sm", type: "button" }, "Excluir cliente");
+  deleteBtn.addEventListener("click", async () => {
+    if (!confirm(`Excluir "${client.name}" e todas as contas conectadas dele? Essa ação não pode ser desfeita.`)) return;
+    try {
+      await sb.from("hub_connected_accounts").delete().eq("client_id", client.id);
+      await sb.from("hub_report_configs").delete().eq("client_id", client.id);
+      const { error } = await sb.from("hub_clients").delete().eq("id", client.id);
+      if (error) throw error;
+      toast(`"${client.name}" excluído.`);
+      closeModal();
+      state.currentClientId = null;
+      await loadClients();
+    } catch (err) {
+      toast(err.message || "Não consegui excluir.", true);
+    }
+  });
+
+  const wrap = el("div", {}, [
+    preview,
+    el("label", {}, "Nome do cliente"),
+    nameInput,
+    el("label", {}, "Logo do cliente (aparece no relatório)"),
+    fileInput,
+    el("div", { style: "margin-top:20px;padding-top:16px;border-top:1px solid var(--border);" }, [
+      el("p", { class: "small muted", style: "margin-bottom:10px;" }, "Zona de risco"),
+      deleteBtn,
+    ]),
+  ]);
+
+  openModal(`Editar ${client.name}`, wrap, async () => {
+    const newName = nameInput.value.trim();
+    if (!newName) { toast("Digite um nome.", true); return false; }
+
+    let logoUrl = client.logo_url || null;
+    const file = fileInput.files[0];
+    if (file) {
+      const path = `${state.user.id}/${client.id}-${Date.now()}.${file.name.split(".").pop()}`;
+      const { error: upErr } = await sb.storage.from("client-logos").upload(path, file, { upsert: true });
+      if (upErr) { toast("Falha ao enviar logo: " + upErr.message, true); return false; }
+      const { data: pub } = sb.storage.from("client-logos").getPublicUrl(path);
+      logoUrl = pub.publicUrl;
+    }
+
+    const { error } = await sb.from("hub_clients").update({ name: newName, logo_url: logoUrl }).eq("id", client.id);
+    if (error) { toast(error.message, true); return false; }
+    toast("Cliente atualizado.");
+    await loadClients();
+  }, "Salvar");
+});
 
 $("#date-preset-select").addEventListener("change", async (e) => {
   const datePreset = e.target.value;
@@ -627,6 +703,14 @@ async function renderReport() {
     last_90d: "últimos 90 dias", this_month: "este mês", last_month: "mês passado",
   };
   $("#report-period").textContent = periodLabels[datePreset] || datePreset;
+  const client = state.clients.find((c) => c.id === state.currentClientId);
+  const reportLogo = $("#report-logo");
+  if (client?.logo_url) {
+    reportLogo.src = client.logo_url;
+    reportLogo.classList.remove("hidden");
+  } else {
+    reportLogo.classList.add("hidden");
+  }
 
   try {
     let totalSpend = 0, totalLeads = 0, totalImpressions = 0, totalClicks = 0;

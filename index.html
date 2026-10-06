@@ -58,9 +58,15 @@
       <!-- Client view -->
       <div id="view-client" class="hidden">
         <div class="row between">
-          <div>
-            <h1 class="page-title" id="client-name">Cliente</h1>
-            <p class="page-sub" id="client-sub">Contas conectadas e relatório</p>
+          <div class="row" style="gap:14px;">
+            <img id="client-logo" class="hidden" style="width:48px;height:48px;border-radius:8px;object-fit:cover;border:1px solid var(--border);" />
+            <div>
+              <h1 class="page-title" style="display:inline-flex;align-items:center;gap:10px;">
+                <span id="client-name">Cliente</span>
+                <button class="btn btn-sm" id="btn-edit-client" type="button">Editar</button>
+              </h1>
+              <p class="page-sub" id="client-sub">Contas conectadas e relatório</p>
+            </div>
           </div>
           <div class="row">
             <select id="date-preset-select" style="width:auto;margin-bottom:0;">
@@ -89,7 +95,10 @@
         <div id="report-print-area">
           <div class="card" id="report-card">
             <div class="card-title">
-              Relatório
+              <span class="row" style="gap:10px;">
+                <img id="report-logo" class="hidden" style="width:28px;height:28px;border-radius:6px;object-fit:cover;" />
+                Relatório
+              </span>
               <span class="muted small" id="report-period">últimos 30 dias</span>
             </div>
             <div id="report-body">
