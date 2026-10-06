@@ -33,7 +33,6 @@ const METRIC_DEFS = [
   { key: "leads_by_day", label: "Leads por dia (evolução)" },
   { key: "region_leads", label: "Leads por região" },
   { key: "creative_thumbs", label: "Anúncios em destaque" },
-  { key: "balance", label: "Saldo / fatura da conta" },
 ];
 const DEFAULT_METRICS = METRIC_DEFS.map((m) => m.key);
 const CHART_COLORS = ["#c9a66b", "#16263d", "#7fa6c9", "#e0bd85", "#1f9d6c", "#c0392b", "#64748b"];
@@ -44,6 +43,57 @@ function renderChart(canvasId, config) {
   const ctx = document.getElementById(canvasId);
   if (!ctx) return;
   chartInstances[canvasId] = new Chart(ctx, config);
+}
+
+// Plugin local (sem CDN extra) que escreve o valor de cada barra/ponto acima dela —
+// essencial pro relatório em PDF, onde não existe "passar o mouse" pra ler o tooltip.
+const valueLabelPlugin = {
+  id: "valueLabels",
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((dataset, i) => {
+      const meta = chart.getDatasetMeta(i);
+      if (meta.hidden) return;
+      meta.data.forEach((el, index) => {
+        const value = dataset.data[index];
+        if (value == null) return;
+        ctx.save();
+        ctx.fillStyle = "#16263d";
+        ctx.font = "600 11px Inter, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(String(value), el.x, el.y - 8);
+        ctx.restore();
+      });
+    });
+  },
+};
+
+// Legenda de gráficos de pizza/rosca mostrando "Rótulo: valor" direto ao lado do
+// gráfico (sem depender de hover, que não existe no PDF impresso).
+function legendWithValues() {
+  return {
+    position: "bottom",
+    labels: {
+      color: "#16263d",
+      font: { size: 11 },
+      generateLabels(chart) {
+        const data = chart.data;
+        const meta = chart.getDatasetMeta(0);
+        return data.labels.map((label, i) => {
+          const value = data.datasets[0].data[i];
+          const style = meta.controller.getStyle(i);
+          return {
+            text: `${label}: ${value}`,
+            fillStyle: style.backgroundColor,
+            strokeStyle: style.borderColor,
+            lineWidth: style.borderWidth,
+            hidden: meta.data[i]?.hidden || false,
+            index: i,
+          };
+        });
+      },
+    },
+  };
 }
 
 // ---------------- Datas (período atual x período anterior, pra comparação) ----------------
@@ -788,6 +838,25 @@ function sumActionValue(actions, type) {
   return found ? Number(found.value) : 0;
 }
 
+// Contagem de leads: formulários nativos (Instant Forms) do Facebook/Instagram
+// reportam o MESMO lead em dois action_types diferentes — "onsite_conversion.lead_grouped"
+// (já deduplicado, é o número certo) e "lead" (bruto, pode contar o mesmo lead mais de uma
+// vez). Por isso sempre priorizamos o valor deduplicado; "lead" só é usado como fallback
+// pra contas que captam lead só por pixel/CAPI no site, sem formulário nativo.
+function leadCount(actions) {
+  const grouped = sumActionValue(actions, "onsite_conversion.lead_grouped");
+  if (grouped > 0) return grouped;
+  return sumActionValue(actions, "lead");
+}
+
+// "Cliques no link" é o clique que de fato leva a pessoa pra fora do anúncio
+// (action_type "link_click"), diferente do campo genérico "clicks" da API, que soma
+// qualquer interação (like, comentário, expandir imagem etc.) e por isso é maior e
+// não reflete cliques reais no link.
+function linkClicks(actions) {
+  return sumActionValue(actions, "link_click");
+}
+
 function platformLabel(p) {
   return { facebook: "Facebook", instagram: "Instagram", audience_network: "Audience Network", messenger: "Messenger" }[p] || p;
 }
@@ -832,7 +901,6 @@ async function renderReport() {
     let totalSpend = 0, totalLeads = 0, totalImpressions = 0, totalClicks = 0;
     let prevSpend = 0, prevLeads = 0, prevImpressions = 0, prevClicks = 0;
     let currency = "BRL";
-    let balances = [];
     const regionMap = new Map();
     const platformMap = new Map();
     const genderMap = new Map();
@@ -845,7 +913,7 @@ async function renderReport() {
     for (const acc of state.accounts) {
       const [accInfo, insights, prevInsights, regionInsights, platformInsights, genderInsights, ageInsights, dailyInsights, ads] = await Promise.all([
         metaCall(acc.access_token, `act_${acc.account_id}`, {
-          fields: "name,currency,balance,amount_spent,spend_cap",
+          fields: "name,currency",
         }),
         metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
           time_range: timeRangeParam,
@@ -905,65 +973,65 @@ async function renderReport() {
       ]);
 
       currency = accInfo.currency || currency;
-      balances.push({ name: accInfo.name, balance: accInfo.balance, amount_spent: accInfo.amount_spent, spend_cap: accInfo.spend_cap, currency: accInfo.currency });
 
       const row = (insights.data && insights.data[0]) || {};
       totalSpend += Number(row.spend || 0);
-      totalLeads += sumActionValue(row.actions, "lead") || sumActionValue(row.actions, "onsite_conversion.lead_grouped");
+      totalLeads += leadCount(row.actions);
       totalImpressions += Number(row.impressions || 0);
-      totalClicks += Number(row.clicks || 0);
+      totalClicks += linkClicks(row.actions);
       for (const ce of customEvents) {
         customTotals.set(ce.action_type, (customTotals.get(ce.action_type) || 0) + sumActionValue(row.actions, ce.action_type));
       }
 
       const prow = (prevInsights.data && prevInsights.data[0]) || {};
       prevSpend += Number(prow.spend || 0);
-      prevLeads += sumActionValue(prow.actions, "lead") || sumActionValue(prow.actions, "onsite_conversion.lead_grouped");
+      prevLeads += leadCount(prow.actions);
       prevImpressions += Number(prow.impressions || 0);
-      prevClicks += Number(prow.clicks || 0);
+      prevClicks += linkClicks(prow.actions);
 
       for (const r of regionInsights.data || []) {
-        const leads = sumActionValue(r.actions, "lead") || sumActionValue(r.actions, "onsite_conversion.lead_grouped");
+        const leads = leadCount(r.actions);
         if (!r.region) continue;
-        const cur = regionMap.get(r.region) || { leads: 0, spend: 0, impressions: 0 };
+        const cur = regionMap.get(r.region) || { leads: 0, spend: 0, impressions: 0, clicks: 0 };
         cur.leads += leads;
         cur.spend += Number(r.spend || 0);
         cur.impressions += Number(r.impressions || 0);
+        cur.clicks += linkClicks(r.actions);
         regionMap.set(r.region, cur);
       }
 
       for (const p of platformInsights.data || []) {
-        const leads = sumActionValue(p.actions, "lead") || sumActionValue(p.actions, "onsite_conversion.lead_grouped");
+        const leads = leadCount(p.actions);
         if (!p.publisher_platform) continue;
         const cur = platformMap.get(p.publisher_platform) || { leads: 0, spend: 0, impressions: 0, clicks: 0 };
         cur.leads += leads;
         cur.spend += Number(p.spend || 0);
         cur.impressions += Number(p.impressions || 0);
-        cur.clicks += Number(p.clicks || 0);
+        cur.clicks += linkClicks(p.actions);
         platformMap.set(p.publisher_platform, cur);
       }
       for (const g of genderInsights.data || []) {
-        const leads = sumActionValue(g.actions, "lead") || sumActionValue(g.actions, "onsite_conversion.lead_grouped");
+        const leads = leadCount(g.actions);
         if (!g.gender || !leads) continue;
         genderMap.set(g.gender, (genderMap.get(g.gender) || 0) + leads);
       }
       for (const a of ageInsights.data || []) {
-        const leads = sumActionValue(a.actions, "lead") || sumActionValue(a.actions, "onsite_conversion.lead_grouped");
+        const leads = leadCount(a.actions);
         if (!a.age) continue;
         ageMap.set(a.age, (ageMap.get(a.age) || 0) + leads);
       }
       for (const d of dailyInsights.data || []) {
-        const leads = sumActionValue(d.actions, "lead") || sumActionValue(d.actions, "onsite_conversion.lead_grouped");
+        const leads = leadCount(d.actions);
         if (!d.date_start) continue;
         dailyMap.set(d.date_start, (dailyMap.get(d.date_start) || 0) + leads);
       }
 
       for (const ad of ads.data || []) {
         const adInsights = (ad.insights && ad.insights.data && ad.insights.data[0]) || {};
-        const leads = sumActionValue(adInsights.actions, "lead") || sumActionValue(adInsights.actions, "onsite_conversion.lead_grouped");
+        const leads = leadCount(adInsights.actions);
         const adSpend = Number(adInsights.spend || 0);
         const adImpr = Number(adInsights.impressions || 0);
-        const adClicks = Number(adInsights.clicks || 0);
+        const adClicks = linkClicks(adInsights.actions);
         creatives.push({
           name: ad.name,
           thumb: ad.creative && ad.creative.thumbnail_url,
@@ -1046,36 +1114,40 @@ async function renderReport() {
         renderChart(c.id, {
           type: "doughnut",
           data: { labels: c.labels, datasets: [{ data: c.data, backgroundColor: CHART_COLORS }] },
-          options: { animation: false, plugins: { legend: { position: "bottom", labels: { color: "#16263d", font: { size: 11 } } } } },
+          options: { animation: false, plugins: { legend: legendWithValues() } },
         });
       }
     }
 
-    // Tabela: CTR/CPC/CPM por plataforma
+    // Tabela: leads, custo por lead, CTR, CPC, CPM e cliques no link por plataforma
     if (metrics.has("platform_breakdown") && platformMap.size) {
       const card = el("div", { class: "card" });
       card.appendChild(el("div", { class: "card-title" }, "Métricas por plataforma"));
       const table = el("table", { class: "region-table" });
       table.appendChild(el("tr", {}, [
-        el("th", {}, "Plataforma"), el("th", {}, "Leads"), el("th", {}, "CTR"), el("th", {}, "CPC"), el("th", {}, "CPM"),
+        el("th", {}, "Plataforma"), el("th", {}, "Leads"), el("th", {}, "Custo/lead"), el("th", {}, "CTR"),
+        el("th", {}, "CPC"), el("th", {}, "CPM"), el("th", {}, "Cliques no link"),
       ]));
       for (const [platform, v] of platformMap.entries()) {
+        const pCpl = v.leads > 0 ? v.spend / v.leads : null;
         const pCtr = v.impressions > 0 ? (v.clicks / v.impressions) * 100 : null;
         const pCpc = v.clicks > 0 ? v.spend / v.clicks : null;
         const pCpm = v.impressions > 0 ? (v.spend / v.impressions) * 1000 : null;
         table.appendChild(el("tr", {}, [
           el("td", {}, platformLabel(platform)),
           el("td", {}, fmtNumber(v.leads)),
+          el("td", {}, pCpl != null ? fmtMoney(pCpl, currency) : "—"),
           el("td", {}, fmtPct(pCtr)),
           el("td", {}, pCpc != null ? fmtMoney(pCpc, currency) : "—"),
           el("td", {}, pCpm != null ? fmtMoney(pCpm, currency) : "—"),
+          el("td", {}, fmtNumber(v.clicks)),
         ]));
       }
       card.appendChild(table);
       body.appendChild(card);
     }
 
-    // Gráfico: leads por dia (linha)
+    // Gráfico: leads por dia (barra — mais fácil de ler valor exato que linha, principalmente no PDF)
     if (metrics.has("leads_by_day") && dailySorted.length) {
       const card = el("div", { class: "card chart-card" }, [
         el("div", { class: "card-title" }, "Leads por dia"),
@@ -1083,11 +1155,12 @@ async function renderReport() {
       ]);
       body.appendChild(card);
       renderChart("chart-daily", {
-        type: "line",
+        type: "bar",
         data: {
           labels: dailySorted.map(([d]) => d.slice(5).split("-").reverse().join("/")),
-          datasets: [{ label: "Leads", data: dailySorted.map(([, v]) => v), borderColor: "#c9a66b", backgroundColor: "rgba(201,166,107,0.15)", tension: 0.35, fill: true }],
+          datasets: [{ label: "Leads", data: dailySorted.map(([, v]) => v), backgroundColor: "#c9a66b" }],
         },
+        plugins: [valueLabelPlugin],
         options: {
           animation: false,
           plugins: { legend: { display: false } },
@@ -1109,41 +1182,13 @@ async function renderReport() {
           labels: agesSorted.map(([a]) => a),
           datasets: [{ label: "Leads", data: agesSorted.map(([, v]) => v), backgroundColor: "#c9a66b" }],
         },
+        plugins: [valueLabelPlugin],
         options: {
           animation: false,
           plugins: { legend: { display: false } },
           scales: { x: { ticks: { color: "#64748b" } }, y: { beginAtZero: true, ticks: { color: "#64748b" } } },
         },
       });
-    }
-
-    // Saldo da conta: a Meta tem dois modelos de cobrança diferentes.
-    // - Pré-pago (spend_cap definido): o cliente depositou um valor e tem um limite de gasto.
-    //   Nesse caso dá pra mostrar "quanto ainda resta" (spend_cap - amount_spent).
-    // - Pós-pago / boleto (THRESHOLD, sem spend_cap): não existe "saldo disponível" de fato —
-    //   a conta não tem dinheiro parado nela, ela acumula gasto e o boleto cobre esse gasto
-    //   quando bate o limiar de cobrança (ou no fechamento do ciclo). Nesse caso mostramos
-    //   o gasto acumulado no ciclo atual (desde a última fatura paga), que é o número real
-    //   que a API disponibiliza — e nunca inventamos um "saldo" que não existe.
-    if (metrics.has("balance")) {
-      const wrap = el("div", { class: "card" });
-      wrap.appendChild(el("div", { class: "card-title" }, "Saldo da conta"));
-      for (const b of balances) {
-        const spentMinor = Number(b.amount_spent || 0);
-        const capMinor = Number(b.spend_cap || 0);
-        // spend_cap = 0 (ou um valor absurdamente alto) significa "sem limite definido" na API da Meta,
-        // ou seja, conta pós-paga (boleto/fatura) — não é um bug, é a conta não ter limite de pré-pago.
-        const hasCap = capMinor > 0 && capMinor < 100000000000;
-        const remaining = hasCap ? (capMinor - spentMinor) / 100 : null;
-        const cycleSpend = spentMinor / 100;
-        wrap.appendChild(el("div", { class: "row between", style: "margin-bottom:6px;" }, [
-          el("span", { class: "muted small" }, b.name || "Conta"),
-          el("span", {}, remaining != null
-            ? `${fmtMoney(remaining, b.currency)} disponível (de ${fmtMoney(capMinor / 100, b.currency)} definido)`
-            : `${fmtMoney(cycleSpend, b.currency)} gasto no ciclo atual (conta pós-paga via boleto, sem limite pré-pago)`),
-        ]));
-      }
-      body.appendChild(wrap);
     }
 
     // Region table
@@ -1159,15 +1204,20 @@ async function renderReport() {
           el("th", {}, "Região"),
           el("th", {}, "Leads"),
           el("th", {}, "Custo por lead"),
+          el("th", {}, "Cliques no link"),
+          el("th", {}, "Custo por clique"),
           el("th", {}, "Investimento"),
         ]));
         for (const r of regionsSorted) {
           const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
           const regionCpl = r.leads > 0 ? r.spend / r.leads : null;
+          const regionCpc = r.clicks > 0 ? r.spend / r.clicks : null;
           table.appendChild(el("tr", {}, [
             el("td", {}, r.region),
             el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
             el("td", {}, regionCpl != null ? fmtMoney(regionCpl, currency) : "—"),
+            el("td", {}, fmtNumber(r.clicks)),
+            el("td", {}, regionCpc != null ? fmtMoney(regionCpc, currency) : "—"),
             el("td", {}, fmtMoney(r.spend, currency)),
           ]));
         }
