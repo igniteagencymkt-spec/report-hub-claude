@@ -118,6 +118,11 @@ function getDateRange(datePreset) {
   } else if (datePreset === "last_month") {
     since = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     until = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else if (datePreset === "maximum") {
+    // A API de Insights da Meta só guarda dados de ~37 meses pra trás — não dá
+    // pra pedir mais do que isso, então "máximo" já busca exatamente esse teto.
+    since = new Date(today.getFullYear(), today.getMonth() - 37, today.getDate());
+    until = today;
   } else {
     const days = { last_7d: 7, last_14d: 14, last_30d: 30, last_90d: 90 }[datePreset] || 30;
     until = today;
@@ -935,6 +940,7 @@ async function renderReport() {
   const periodLabels = {
     last_7d: "últimos 7 dias", last_14d: "últimos 14 dias", last_30d: "últimos 30 dias",
     last_90d: "últimos 90 dias", this_month: "este mês", last_month: "mês passado",
+    maximum: "período máximo (~37 meses)",
   };
   const client = state.clients.find((c) => c.id === state.currentClientId);
   const reportLogo = $("#report-logo");
