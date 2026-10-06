@@ -63,6 +63,14 @@
             <p class="page-sub" id="client-sub">Contas conectadas e relatório</p>
           </div>
           <div class="row">
+            <select id="date-preset-select" style="width:auto;margin-bottom:0;">
+              <option value="last_7d">Últimos 7 dias</option>
+              <option value="last_14d">Últimos 14 dias</option>
+              <option value="last_30d">Últimos 30 dias</option>
+              <option value="last_90d">Últimos 90 dias</option>
+              <option value="this_month">Este mês</option>
+              <option value="last_month">Mês passado</option>
+            </select>
             <button class="btn" id="btn-settings">Métricas</button>
             <button class="btn btn-primary" id="btn-export-pdf">Baixar PDF</button>
           </div>
@@ -94,9 +102,9 @@
   </div>
 
   <!-- ================= MODALS ================= -->
-  <div id="modal-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:40;">
-    <div class="card" style="width:420px;max-width:90vw;">
-      <div class="card-title" id="modal-title">Título</div>
+  <div id="modal-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(10,20,35,0.55);display:flex;align-items:center;justify-content:center;z-index:40;">
+    <div class="card" style="width:460px;max-width:90vw;">
+      <div class="card-title" id="modal-title">Título<button class="modal-close" id="modal-x" type="button">&times;</button></div>
       <div id="modal-body"></div>
       <div class="row" style="justify-content:flex-end;margin-top:8px;">
         <button class="btn btn-ghost" id="modal-cancel">Cancelar</button>

@@ -101,6 +101,13 @@ function closeModal() {
   $("#modal-backdrop").classList.add("hidden");
 }
 $("#modal-cancel").addEventListener("click", closeModal);
+$("#modal-x").addEventListener("click", closeModal);
+$("#modal-backdrop").addEventListener("click", (e) => {
+  if (e.target.id === "modal-backdrop") closeModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#modal-backdrop").classList.contains("hidden")) closeModal();
+});
 
 // ---------------- Meta Graph proxy ----------------
 
@@ -274,8 +281,29 @@ async function selectClient(clientId) {
   $("#client-name").textContent = client.name;
   await Promise.all([loadAccounts(clientId), loadReportConfig(clientId)]);
   renderAccounts();
+  $("#date-preset-select").value = state.reportConfig?.date_preset || "last_30d";
   await renderReport();
 }
+
+$("#date-preset-select").addEventListener("change", async (e) => {
+  const datePreset = e.target.value;
+  const payload = {
+    user_id: state.user.id,
+    client_id: state.currentClientId,
+    metrics: state.reportConfig?.metrics || DEFAULT_METRICS,
+    custom_events: state.reportConfig?.custom_events || [],
+    date_preset: datePreset,
+  };
+  let error;
+  if (state.reportConfig?.id) {
+    ({ error } = await sb.from("hub_report_configs").update(payload).eq("id", state.reportConfig.id));
+  } else {
+    ({ error } = await sb.from("hub_report_configs").insert(payload));
+  }
+  if (error) { toast(error.message, true); return; }
+  await loadReportConfig(state.currentClientId);
+  await renderReport();
+});
 
 // ---------------- Connected accounts ----------------
 
@@ -594,6 +622,11 @@ async function renderReport() {
 
   const metrics = new Set(state.reportConfig?.metrics || DEFAULT_METRICS);
   const datePreset = state.reportConfig?.date_preset || "last_30d";
+  const periodLabels = {
+    last_7d: "últimos 7 dias", last_14d: "últimos 14 dias", last_30d: "últimos 30 dias",
+    last_90d: "últimos 90 dias", this_month: "este mês", last_month: "mês passado",
+  };
+  $("#report-period").textContent = periodLabels[datePreset] || datePreset;
 
   try {
     let totalSpend = 0, totalLeads = 0, totalImpressions = 0, totalClicks = 0;
