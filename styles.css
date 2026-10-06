@@ -366,6 +366,40 @@ table.region-table tr:last-child td { border-bottom: none; }
 }
 .creative-card .cc-leads { font-size: 11px; color: var(--gold-bright); margin-top: 4px; }
 
+/* ---------- Selo de origem (Meta Ads, etc.) ---------- */
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #eef1f7;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 18px;
+}
+.source-badge-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #0866ff; /* azul associado ao Meta, sem reproduzir a logo oficial */
+  flex-shrink: 0;
+}
+
+/* ---------- Banner da agência (rodapé do relatório) ---------- */
+.report-banner {
+  text-align: center;
+  margin-top: 8px;
+}
+.report-banner img {
+  max-width: 100%;
+  max-height: 140px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
 /* ---------- Metric picker ---------- */
 .metric-options {
   display: grid;

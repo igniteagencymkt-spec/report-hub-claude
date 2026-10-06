@@ -153,6 +153,7 @@ let state = {
   currentClientId: null,
   accounts: [],
   reportConfig: null,
+  agencySettings: null,
 };
 
 // ---------------- Helpers ----------------
@@ -250,6 +251,7 @@ async function renderAuthState() {
     $("#app-shell").classList.remove("hidden");
     $("#user-email").textContent = state.user.email;
     await loadClients();
+    await loadAgencySettings();
   } else {
     $("#login-screen").classList.remove("hidden");
     $("#app-shell").classList.add("hidden");
@@ -294,6 +296,20 @@ $("#btn-account").addEventListener("click", () => {
   const emailInput = el("input", { type: "email", value: state.user?.email || "" });
   const pwInput = el("input", { type: "password", placeholder: "Deixe em branco pra não trocar" });
   const pwConfirm = el("input", { type: "password", placeholder: "Confirmar nova senha" });
+
+  const bannerUrl = state.agencySettings?.banner_url || "";
+  const bannerFileInput = el("input", { type: "file", accept: "image/*" });
+  const bannerPreview = el("img", {
+    src: bannerUrl,
+    style: `max-width:100%;max-height:80px;border-radius:8px;border:1px solid var(--border);margin-bottom:10px;${bannerUrl ? "" : "display:none;"}`,
+  });
+  bannerFileInput.addEventListener("change", () => {
+    const f = bannerFileInput.files[0];
+    if (!f) return;
+    bannerPreview.src = URL.createObjectURL(f);
+    bannerPreview.style.display = "block";
+  });
+
   const wrap = el("div", {}, [
     el("label", {}, "E-mail"),
     emailInput,
@@ -302,6 +318,11 @@ $("#btn-account").addEventListener("click", () => {
     el("label", {}, "Confirmar nova senha"),
     pwConfirm,
     el("p", { class: "small muted" }, "Pra trocar só o e-mail, deixe as senhas em branco. Pra trocar só a senha, deixe o e-mail como está."),
+    el("div", { style: "margin-top:16px;padding-top:16px;border-top:1px solid var(--border);" }, [
+      el("label", {}, "Banner da agência (aparece no rodapé de todos os relatórios)"),
+      bannerPreview,
+      bannerFileInput,
+    ]),
   ]);
 
   openModal("Minha conta", wrap, async () => {
@@ -318,15 +339,32 @@ $("#btn-account").addEventListener("click", () => {
     if (newEmail && newEmail !== state.user.email) updates.email = newEmail;
     if (newPw) updates.password = newPw;
 
-    if (!Object.keys(updates).length) { toast("Nada pra atualizar."); return; }
+    if (Object.keys(updates).length) {
+      const { error } = await sb.auth.updateUser(updates);
+      if (error) { toast(error.message, true); return false; }
+    }
 
-    const { error } = await sb.auth.updateUser(updates);
-    if (error) { toast(error.message, true); return false; }
+    const bannerFile = bannerFileInput.files[0];
+    if (bannerFile) {
+      const path = `${state.user.id}/banner-${Date.now()}.${bannerFile.name.split(".").pop()}`;
+      const { error: upErr } = await sb.storage.from("agency-assets").upload(path, bannerFile, { upsert: true });
+      if (upErr) { toast("Falha ao enviar banner: " + upErr.message, true); return false; }
+      const { data: pub } = sb.storage.from("agency-assets").getPublicUrl(path);
+      const { error: saveErr } = await sb.from("hub_agency_settings")
+        .upsert({ user_id: state.user.id, banner_url: pub.publicUrl }, { onConflict: "user_id" });
+      if (saveErr) { toast("Falha ao salvar banner: " + saveErr.message, true); return false; }
+      await loadAgencySettings();
+      await renderReport();
+    }
+
+    if (!Object.keys(updates).length && !bannerFile) { toast("Nada pra atualizar."); return; }
 
     if (updates.email) {
       toast("Confira seu e-mail atual e o novo pra confirmar a troca.");
-    } else {
+    } else if (Object.keys(updates).length) {
       toast("Senha atualizada.");
+    } else {
+      toast("Banner atualizado.");
     }
   }, "Salvar");
 });
@@ -349,6 +387,11 @@ async function loadClients() {
     $("#view-empty").classList.remove("hidden");
     $("#view-client").classList.add("hidden");
   }
+}
+
+async function loadAgencySettings() {
+  const { data } = await sb.from("hub_agency_settings").select("*").eq("user_id", state.user.id).maybeSingle();
+  state.agencySettings = data || null;
 }
 
 function renderClientList() {
@@ -1084,6 +1127,16 @@ async function renderReport() {
 
     body.innerHTML = "";
 
+    // Selo de origem dos dados: hoje só existe Meta Ads conectado, então fica fixo.
+    // Quando Instagram/Google/YouTube forem conectados como fontes próprias, cada bloco
+    // de métricas correspondente ganha o selo da sua própria plataforma aqui.
+    if (metrics.size) {
+      body.appendChild(el("div", { class: "source-badge" }, [
+        el("span", { class: "source-badge-dot" }),
+        "Métricas de Meta Ads",
+      ]));
+    }
+
     // Stat tiles (com variação vs período anterior)
     const tileDefs = [];
     if (metrics.has("spend")) tileDefs.push(["Investimento", fmtMoney(totalSpend, currency), deltaBadge(totalSpend, prevSpend)]);
@@ -1280,6 +1333,13 @@ async function renderReport() {
         card.appendChild(table);
       }
       body.appendChild(card);
+    }
+
+    // Banner da agência (rodapé do relatório, configurado em "Minha conta")
+    if (state.agencySettings?.banner_url) {
+      body.appendChild(el("div", { class: "report-banner" }, [
+        el("img", { src: state.agencySettings.banner_url, alt: "" }),
+      ]));
     }
 
     if (!body.children.length) {
