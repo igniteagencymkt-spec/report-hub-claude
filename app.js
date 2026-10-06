@@ -1117,22 +1117,30 @@ async function renderReport() {
       });
     }
 
-    // Saldo disponível na conta (limite de gasto definido menos o já gasto no total da conta,
-    // não o investimento do período selecionado acima)
+    // Saldo da conta: a Meta tem dois modelos de cobrança diferentes.
+    // - Pré-pago (spend_cap definido): o cliente depositou um valor e tem um limite de gasto.
+    //   Nesse caso dá pra mostrar "quanto ainda resta" (spend_cap - amount_spent).
+    // - Pós-pago / boleto (THRESHOLD, sem spend_cap): não existe "saldo disponível" de fato —
+    //   a conta não tem dinheiro parado nela, ela acumula gasto e o boleto cobre esse gasto
+    //   quando bate o limiar de cobrança (ou no fechamento do ciclo). Nesse caso mostramos
+    //   o gasto acumulado no ciclo atual (desde a última fatura paga), que é o número real
+    //   que a API disponibiliza — e nunca inventamos um "saldo" que não existe.
     if (metrics.has("balance")) {
       const wrap = el("div", { class: "card" });
-      wrap.appendChild(el("div", { class: "card-title" }, "Saldo disponível na conta"));
+      wrap.appendChild(el("div", { class: "card-title" }, "Saldo da conta"));
       for (const b of balances) {
         const spentMinor = Number(b.amount_spent || 0);
         const capMinor = Number(b.spend_cap || 0);
-        // spend_cap = 0 (ou um valor absurdamente alto) significa "sem limite definido" na API da Meta
+        // spend_cap = 0 (ou um valor absurdamente alto) significa "sem limite definido" na API da Meta,
+        // ou seja, conta pós-paga (boleto/fatura) — não é um bug, é a conta não ter limite de pré-pago.
         const hasCap = capMinor > 0 && capMinor < 100000000000;
         const remaining = hasCap ? (capMinor - spentMinor) / 100 : null;
+        const cycleSpend = spentMinor / 100;
         wrap.appendChild(el("div", { class: "row between", style: "margin-bottom:6px;" }, [
           el("span", { class: "muted small" }, b.name || "Conta"),
           el("span", {}, remaining != null
             ? `${fmtMoney(remaining, b.currency)} disponível (de ${fmtMoney(capMinor / 100, b.currency)} definido)`
-            : "Sem limite de gasto definido nesta conta"),
+            : `${fmtMoney(cycleSpend, b.currency)} gasto no ciclo atual (conta pós-paga via boleto, sem limite pré-pago)`),
         ]));
       }
       body.appendChild(wrap);
