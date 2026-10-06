@@ -714,9 +714,15 @@ $("#btn-settings").addEventListener("click", async () => {
     grid.appendChild(label);
   }
 
+  const btnAll = el("button", { class: "btn btn-sm", type: "button" }, "Marcar todos");
+  const btnNone = el("button", { class: "btn btn-sm", type: "button" }, "Desmarcar todos");
+  btnAll.addEventListener("click", () => { for (const k in checks) checks[k].checked = true; });
+  btnNone.addEventListener("click", () => { for (const k in checks) checks[k].checked = false; });
+
   const customWrap = el("div", {}, [el("p", { class: "small muted" }, "Procurando eventos de conversão desta conta...")]);
 
   openModal("Métricas do relatório", el("div", {}, [
+    el("div", { class: "row", style: "margin-bottom:12px;" }, [btnAll, btnNone]),
     grid,
     el("label", { style: "margin-top:4px;" }, "Eventos personalizados (pixel / CAPI) detectados nesta conta"),
     customWrap,
@@ -861,7 +867,7 @@ async function renderReport() {
           ? metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
               time_range: timeRangeParam,
               breakdowns: "publisher_platform",
-              fields: "actions",
+              fields: "actions,spend,impressions,clicks",
               limit: 20,
             })
           : Promise.resolve({ data: [] }),
@@ -928,8 +934,13 @@ async function renderReport() {
 
       for (const p of platformInsights.data || []) {
         const leads = sumActionValue(p.actions, "lead") || sumActionValue(p.actions, "onsite_conversion.lead_grouped");
-        if (!p.publisher_platform || !leads) continue;
-        platformMap.set(p.publisher_platform, (platformMap.get(p.publisher_platform) || 0) + leads);
+        if (!p.publisher_platform) continue;
+        const cur = platformMap.get(p.publisher_platform) || { leads: 0, spend: 0, impressions: 0, clicks: 0 };
+        cur.leads += leads;
+        cur.spend += Number(p.spend || 0);
+        cur.impressions += Number(p.impressions || 0);
+        cur.clicks += Number(p.clicks || 0);
+        platformMap.set(p.publisher_platform, cur);
       }
       for (const g of genderInsights.data || []) {
         const leads = sumActionValue(g.actions, "lead") || sumActionValue(g.actions, "onsite_conversion.lead_grouped");
@@ -982,7 +993,7 @@ async function renderReport() {
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 10);
     creatives.sort((a, b) => b.leads - a.leads);
-    creatives = creatives.slice(0, 10);
+    creatives = creatives.slice(0, 5);
     const dailySorted = [...dailyMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
     const ageOrder = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
     const agesSorted = [...ageMap.entries()].sort((a, b) => ageOrder.indexOf(a[0]) - ageOrder.indexOf(b[0]));
@@ -1016,7 +1027,7 @@ async function renderReport() {
     // Gráficos: plataforma (donut), gênero (donut)
     const smallCharts = [];
     if (metrics.has("platform_breakdown") && platformMap.size) {
-      smallCharts.push({ id: "chart-platform", title: "Leads por plataforma", labels: [...platformMap.keys()].map(platformLabel), data: [...platformMap.values()], type: "doughnut" });
+      smallCharts.push({ id: "chart-platform", title: "Leads por plataforma", labels: [...platformMap.keys()].map(platformLabel), data: [...platformMap.values()].map((v) => v.leads), type: "doughnut" });
     }
     if (metrics.has("gender_breakdown") && genderMap.size) {
       smallCharts.push({ id: "chart-gender", title: "Leads por gênero", labels: [...genderMap.keys()].map(genderLabel), data: [...genderMap.values()], type: "doughnut" });
@@ -1038,6 +1049,30 @@ async function renderReport() {
           options: { animation: false, plugins: { legend: { position: "bottom", labels: { color: "#16263d", font: { size: 11 } } } } },
         });
       }
+    }
+
+    // Tabela: CTR/CPC/CPM por plataforma
+    if (metrics.has("platform_breakdown") && platformMap.size) {
+      const card = el("div", { class: "card" });
+      card.appendChild(el("div", { class: "card-title" }, "Métricas por plataforma"));
+      const table = el("table", { class: "region-table" });
+      table.appendChild(el("tr", {}, [
+        el("th", {}, "Plataforma"), el("th", {}, "Leads"), el("th", {}, "CTR"), el("th", {}, "CPC"), el("th", {}, "CPM"),
+      ]));
+      for (const [platform, v] of platformMap.entries()) {
+        const pCtr = v.impressions > 0 ? (v.clicks / v.impressions) * 100 : null;
+        const pCpc = v.clicks > 0 ? v.spend / v.clicks : null;
+        const pCpm = v.impressions > 0 ? (v.spend / v.impressions) * 1000 : null;
+        table.appendChild(el("tr", {}, [
+          el("td", {}, platformLabel(platform)),
+          el("td", {}, fmtNumber(v.leads)),
+          el("td", {}, fmtPct(pCtr)),
+          el("td", {}, pCpc != null ? fmtMoney(pCpc, currency) : "—"),
+          el("td", {}, pCpm != null ? fmtMoney(pCpm, currency) : "—"),
+        ]));
+      }
+      card.appendChild(table);
+      body.appendChild(card);
     }
 
     // Gráfico: leads por dia (linha)
@@ -1082,16 +1117,22 @@ async function renderReport() {
       });
     }
 
-    // Saldo
+    // Saldo disponível na conta (limite de gasto definido menos o já gasto no total da conta,
+    // não o investimento do período selecionado acima)
     if (metrics.has("balance")) {
       const wrap = el("div", { class: "card" });
-      wrap.appendChild(el("div", { class: "card-title" }, "Saldo / fatura"));
+      wrap.appendChild(el("div", { class: "card-title" }, "Saldo disponível na conta"));
       for (const b of balances) {
         const spentMinor = Number(b.amount_spent || 0);
-        const balMinor = Number(b.balance || 0);
+        const capMinor = Number(b.spend_cap || 0);
+        // spend_cap = 0 (ou um valor absurdamente alto) significa "sem limite definido" na API da Meta
+        const hasCap = capMinor > 0 && capMinor < 100000000000;
+        const remaining = hasCap ? (capMinor - spentMinor) / 100 : null;
         wrap.appendChild(el("div", { class: "row between", style: "margin-bottom:6px;" }, [
           el("span", { class: "muted small" }, b.name || "Conta"),
-          el("span", {}, `Gasto no ciclo: ${fmtMoney(spentMinor / 100, b.currency)} · Saldo/fatura: ${fmtMoney(balMinor / 100, b.currency)}`),
+          el("span", {}, remaining != null
+            ? `${fmtMoney(remaining, b.currency)} disponível (de ${fmtMoney(capMinor / 100, b.currency)} definido)`
+            : "Sem limite de gasto definido nesta conta"),
         ]));
       }
       body.appendChild(wrap);
@@ -1109,18 +1150,16 @@ async function renderReport() {
         table.appendChild(el("tr", {}, [
           el("th", {}, "Região"),
           el("th", {}, "Leads"),
-          el("th", {}, "Impressões"),
-          el("th", {}, "CPM"),
+          el("th", {}, "Custo por lead"),
           el("th", {}, "Investimento"),
         ]));
         for (const r of regionsSorted) {
           const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
-          const regionCpm = r.impressions > 0 ? (r.spend / r.impressions) * 1000 : null;
+          const regionCpl = r.leads > 0 ? r.spend / r.leads : null;
           table.appendChild(el("tr", {}, [
             el("td", {}, r.region),
             el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
-            el("td", {}, fmtNumber(r.impressions)),
-            el("td", {}, regionCpm != null ? fmtMoney(regionCpm, currency) : "—"),
+            el("td", {}, regionCpl != null ? fmtMoney(regionCpl, currency) : "—"),
             el("td", {}, fmtMoney(r.spend, currency)),
           ]));
         }
