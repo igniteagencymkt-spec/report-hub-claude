@@ -352,10 +352,47 @@ async function loadReportConfig(clientId) {
     .limit(1)
     .maybeSingle();
   if (error) { toast(error.message, true); return; }
-  state.reportConfig = data || { metrics: DEFAULT_METRICS, date_preset: "last_30d" };
+  state.reportConfig = data || { metrics: DEFAULT_METRICS, date_preset: "last_30d", custom_events: [] };
 }
 
-$("#btn-settings").addEventListener("click", () => {
+// Eventos de conversão (pixel/CAPI/custom) além do "lead" padrão — nome varia por cliente,
+// então detectamos automaticamente o que cada conta está de fato rastreando.
+function cleanEventLabel(actionType) {
+  return actionType
+    .replace(/^offsite_conversion\.(custom|fb_pixel)\.?/, "")
+    .replace(/^onsite_conversion\./, "")
+    .replace(/^offsite_conversion\./, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim() || actionType;
+}
+
+async function detectCustomEvents() {
+  const found = new Map(); // action_type -> count (soma pra ordenar por relevância)
+  const datePreset = state.reportConfig?.date_preset || "last_30d";
+  const knownLeadTypes = new Set(["lead", "onsite_conversion.lead_grouped"]);
+  await Promise.all(
+    state.accounts.map(async (acc) => {
+      try {
+        const insights = await metaCall(acc.access_token, `act_${acc.account_id}/insights`, {
+          date_preset: datePreset,
+          fields: "actions",
+        });
+        const row = (insights.data && insights.data[0]) || {};
+        for (const a of row.actions || []) {
+          if (knownLeadTypes.has(a.action_type)) continue;
+          if (!/^(offsite_conversion|onsite_conversion)\./.test(a.action_type)) continue;
+          found.set(a.action_type, (found.get(a.action_type) || 0) + Number(a.value || 0));
+        }
+      } catch {
+        // conta sem dados ou token inválido — ignora na detecção, não trava o modal
+      }
+    })
+  );
+  return [...found.entries()].sort((a, b) => b[1] - a[1]).map(([action_type]) => action_type);
+}
+
+$("#btn-settings").addEventListener("click", async () => {
   const current = new Set(state.reportConfig?.metrics || DEFAULT_METRICS);
   const grid = el("div", { class: "metric-options" });
   const checks = {};
@@ -366,12 +403,29 @@ $("#btn-settings").addEventListener("click", () => {
     const label = el("label", { class: "metric-opt" }, [cb, m.label]);
     grid.appendChild(label);
   }
-  openModal("Métricas do relatório", grid, async () => {
+
+  const customWrap = el("div", {}, [el("p", { class: "small muted" }, "Procurando eventos de conversão desta conta...")]);
+
+  openModal("Métricas do relatório", el("div", {}, [
+    grid,
+    el("label", { style: "margin-top:4px;" }, "Eventos personalizados (pixel / CAPI) detectados nesta conta"),
+    customWrap,
+  ]), async () => {
     const metrics = METRIC_DEFS.filter((m) => checks[m.key].checked).map((m) => m.key);
+    const customEvents = [];
+    for (const row of customWrap.querySelectorAll("[data-action-type]")) {
+      const actionType = row.getAttribute("data-action-type");
+      const cb = row.querySelector("input[type=checkbox]");
+      const labelInput = row.querySelector("input[type=text]");
+      if (cb.checked) {
+        customEvents.push({ action_type: actionType, label: labelInput.value.trim() || cleanEventLabel(actionType) });
+      }
+    }
     const payload = {
       user_id: state.user.id,
       client_id: state.currentClientId,
       metrics,
+      custom_events: customEvents,
     };
     let error;
     if (state.reportConfig?.id) {
@@ -383,6 +437,31 @@ $("#btn-settings").addEventListener("click", () => {
     await loadReportConfig(state.currentClientId);
     await renderReport();
   });
+
+  // Carrega a lista de eventos personalizados depois do modal já estar aberto (não trava o clique)
+  try {
+    const savedByType = new Map((state.reportConfig?.custom_events || []).map((e) => [e.action_type, e.label]));
+    const actionTypes = await detectCustomEvents();
+    customWrap.innerHTML = "";
+    if (!actionTypes.length) {
+      customWrap.appendChild(el("div", { class: "small muted" }, "Nenhum evento de conversão extra encontrado nos últimos 30 dias."));
+    } else {
+      for (const actionType of actionTypes) {
+        const cb = el("input", { type: "checkbox" });
+        cb.checked = savedByType.has(actionType);
+        const labelInput = el("input", { type: "text", value: savedByType.get(actionType) || cleanEventLabel(actionType), style: "margin-bottom:0;" });
+        const row = el("div", { "data-action-type": actionType, style: "display:flex;align-items:center;gap:8px;margin-bottom:10px;" }, [
+          cb,
+          labelInput,
+          el("span", { class: "small muted", style: "white-space:nowrap;" }, actionType),
+        ]);
+        customWrap.appendChild(row);
+      }
+    }
+  } catch (err) {
+    customWrap.innerHTML = "";
+    customWrap.appendChild(el("div", { class: "small muted" }, "Não consegui detectar eventos: " + err.message));
+  }
 });
 
 // ---------------- Report rendering ----------------
@@ -412,6 +491,8 @@ async function renderReport() {
     let balances = [];
     const regionMap = new Map(); // region -> {leads, spend}
     let creatives = [];
+    const customEvents = state.reportConfig?.custom_events || [];
+    const customTotals = new Map(customEvents.map((e) => [e.action_type, 0]));
 
     for (const acc of state.accounts) {
       const [accInfo, insights, regionInsights, ads] = await Promise.all([
@@ -447,6 +528,9 @@ async function renderReport() {
       totalLeads += sumActionValue(row.actions, "lead") || sumActionValue(row.actions, "onsite_conversion.lead_grouped");
       totalImpressions += Number(row.impressions || 0);
       totalClicks += Number(row.clicks || 0);
+      for (const ce of customEvents) {
+        customTotals.set(ce.action_type, (customTotals.get(ce.action_type) || 0) + sumActionValue(row.actions, ce.action_type));
+      }
 
       for (const r of regionInsights.data || []) {
         const leads = sumActionValue(r.actions, "lead") || sumActionValue(r.actions, "onsite_conversion.lead_grouped");
@@ -486,6 +570,9 @@ async function renderReport() {
     if (metrics.has("leads")) tiles.push(["Leads", fmtNumber(totalLeads)]);
     if (metrics.has("cpl")) tiles.push(["CPL", cpl != null ? fmtMoney(cpl, currency) : "—"]);
     if (metrics.has("ctr")) tiles.push(["CTR", fmtPct(ctr)]);
+    for (const ce of customEvents) {
+      tiles.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0)]);
+    }
     if (tiles.length) {
       const grid = el("div", { class: "stat-grid" });
       for (const [label, value] of tiles) {
