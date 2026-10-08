@@ -164,6 +164,29 @@ let state = {
 
 // ---------------- Helpers ----------------
 
+// Ícones de origem (selo "Métricas de X"), como no relatório de referência.
+// Monocromáticos/simplificados — identificam a plataforma de forma factual,
+// sem reproduzir arte de marca.
+const META_ICON_SVG = `<svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="18" cy="18" r="18" fill="#0866FF"/>
+  <path d="M20.1 18.4h2.6l.4-3h-3V13.8c0-.87.24-1.46 1.5-1.46h1.6V9.65c-.28-.04-1.23-.12-2.34-.12-2.32 0-3.9 1.4-3.9 3.98v2.44h-2.6v3h2.6v8.2h3.14z" fill="#fff"/>
+</svg>`;
+const INSTAGRAM_ICON_SVG = `<svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="igGrad" cx="30%" cy="107%" r="150%">
+      <stop offset="0%" stop-color="#fdf497"/>
+      <stop offset="20%" stop-color="#fdf497"/>
+      <stop offset="40%" stop-color="#fd5949"/>
+      <stop offset="60%" stop-color="#d6249f"/>
+      <stop offset="100%" stop-color="#285AEB"/>
+    </radialGradient>
+  </defs>
+  <circle cx="18" cy="18" r="18" fill="url(#igGrad)"/>
+  <rect x="10" y="10" width="16" height="16" rx="5" fill="none" stroke="#fff" stroke-width="1.6"/>
+  <circle cx="18" cy="18" r="4.2" fill="none" stroke="#fff" stroke-width="1.6"/>
+  <circle cx="23.3" cy="12.7" r="1.1" fill="#fff"/>
+</svg>`;
+
 function $(sel) { return document.querySelector(sel); }
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -1226,7 +1249,7 @@ async function renderReport() {
     // tem o próprio selo — cada integração mostra a métrica junto da sua própria origem.
     if (metrics.size && metaAccounts.length) {
       body.appendChild(el("div", { class: "source-badge" }, [
-        el("span", { class: "source-badge-dot" }),
+        el("span", { class: "source-badge-icon", html: META_ICON_SVG }),
         "Métricas de Meta Ads",
       ]));
     }
@@ -1306,7 +1329,7 @@ async function renderReport() {
           el("td", {}, fmtNumber(v.clicks)),
         ]));
       }
-      card.appendChild(table);
+      card.appendChild(el("div", { class: "table-scroll" }, [table]));
       body.appendChild(card);
     }
 
@@ -1374,9 +1397,9 @@ async function renderReport() {
         ]));
         for (const c of creatives) {
           const costPerLead = c.leads > 0 ? c.spend / c.leads : null;
-          const nameCell = el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;" }, [
-            c.thumb ? el("img", { src: c.thumb, alt: "", style: "width:36px;height:36px;border-radius:6px;object-fit:cover;flex-shrink:0;" }) : null,
-            el("span", { style: "font-size:13px;" }, c.name || "—"),
+          const nameCell = el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;max-width:170px;" }, [
+            c.thumb ? el("img", { src: c.thumb, alt: "", style: "width:28px;height:28px;border-radius:6px;object-fit:cover;flex-shrink:0;" }) : null,
+            el("span", { style: "font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;", title: c.name || "" }, c.name || "—"),
           ]);
           table.appendChild(el("tr", {}, [
             el("td", {}, nameCell),
@@ -1389,7 +1412,7 @@ async function renderReport() {
             el("td", {}, c.frequency != null ? c.frequency.toFixed(2) : "—"),
           ]));
         }
-        card.appendChild(table);
+        card.appendChild(el("div", { class: "table-scroll" }, [table]));
       }
       body.appendChild(card);
     }
@@ -1424,7 +1447,7 @@ async function renderReport() {
             el("td", {}, fmtMoney(r.spend, currency)),
           ]));
         }
-        card.appendChild(table);
+        card.appendChild(el("div", { class: "table-scroll" }, [table]));
       }
       body.appendChild(card);
     }
@@ -1454,7 +1477,7 @@ async function renderReport() {
           }
 
           body.appendChild(el("div", { class: "source-badge" }, [
-            el("span", { class: "source-badge-dot", style: "background:#e1306c;" }),
+            el("span", { class: "source-badge-icon", html: INSTAGRAM_ICON_SVG }),
             `Instagram · @${profile.username}`,
           ]));
           const igGrid = el("div", { class: "stat-grid" });
