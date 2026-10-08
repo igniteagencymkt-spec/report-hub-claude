@@ -267,6 +267,24 @@ async function metaCall(accessToken, path, params = {}) {
   return data;
 }
 
+// O CDN da Meta não libera CORS pra leitura via canvas, então imagens (thumbnails de
+// anúncio, foto de perfil do Instagram) carregam normalmente na tela mas "desaparecem"
+// silenciosamente ao gerar o PDF (html2canvas pula qualquer imagem cross-origin sem CORS).
+// Essa função baixa a imagem pelo nosso próprio proxy (servidor, sem restrição de CORS) e
+// devolve um data: URL — assim a imagem passa a ser "nossa" e o html2canvas consegue capturá-la.
+async function proxyImageToDataUrl(imageUrl) {
+  if (!imageUrl) return null;
+  try {
+    const { data, error } = await sb.functions.invoke("meta-proxy", {
+      body: { image_url: imageUrl },
+    });
+    if (error || !data || data.error || !data.data_url) return imageUrl;
+    return data.data_url;
+  } catch {
+    return imageUrl;
+  }
+}
+
 // ---------------- Auth ----------------
 
 sb.auth.onAuthStateChange((_event, session) => {
@@ -1239,6 +1257,13 @@ async function renderReport() {
       .slice(0, 30); // Brasil tem 27 UFs; a folga cobre eventuais regiões extras (ex. "Desconhecido")
     creatives.sort((a, b) => b.leads - a.leads);
     creatives = creatives.slice(0, 5);
+    // Troca os thumbnails pelo proxy (data URL) só nos 5 que vão aparecer, pra não gastar
+    // chamadas à toa — garante que apareçam também no PDF exportado (ver proxyImageToDataUrl).
+    await Promise.all(
+      creatives.map(async (c) => {
+        if (c.thumb) c.thumb = await proxyImageToDataUrl(c.thumb);
+      })
+    );
     const dailySorted = [...dailyMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
     const ageOrder = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
     const agesSorted = [...ageMap.entries()].sort((a, b) => ageOrder.indexOf(a[0]) - ageOrder.indexOf(b[0]));
@@ -1459,10 +1484,10 @@ async function renderReport() {
           const profile = await metaCall(ig.access_token, ig.account_id, {
             fields: "username,followers_count,media_count,profile_picture_url",
           });
-          let reachTotal = null, profileViewsTotal = null;
+          let reachTotal = null, profileViewsTotal = null, followerDelta = null;
           try {
             const igInsights = await metaCall(ig.access_token, `${ig.account_id}/insights`, {
-              metric: "reach,profile_views",
+              metric: "reach,profile_views,follower_count",
               period: "day",
               since: range.since,
               until: range.until,
@@ -1471,9 +1496,69 @@ async function renderReport() {
               const sum = (m.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
               if (m.name === "reach") reachTotal = sum;
               if (m.name === "profile_views") profileViewsTotal = sum;
+              // "follower_count" por dia vem como a variação (ganho/perda) daquele dia —
+              // somando o período inteiro dá o saldo de seguidores ganhos/perdidos.
+              if (m.name === "follower_count") followerDelta = sum;
             }
           } catch {
             // Conta recém-conectada ou sem permissão de insights ainda — mostra só o perfil.
+          }
+
+          // Busca as publicações do período (posts e reels) pra "Destaques do Instagram":
+          // top 5 por alcance de cada tipo + total de salvamentos no período.
+          let topPosts = [], topReels = [], savesTotal = null;
+          try {
+            const sinceTs = Math.floor(new Date(`${range.since}T00:00:00Z`).getTime() / 1000);
+            const untilTs = Math.floor(new Date(`${range.until}T23:59:59Z`).getTime() / 1000);
+            const mediaList = await metaCall(ig.access_token, `${ig.account_id}/media`, {
+              fields: "id,caption,media_type,media_product_type,thumbnail_url,media_url,permalink,timestamp",
+              since: sinceTs,
+              until: untilTs,
+              limit: 50,
+            });
+            const items = (mediaList.data || []).filter((m) => {
+              const t = new Date(m.timestamp).getTime() / 1000;
+              return t >= sinceTs && t <= untilTs;
+            });
+            savesTotal = 0;
+            const enriched = [];
+            for (const m of items) {
+              const isReel = m.media_product_type === "REELS";
+              const metricList = isReel ? "reach,likes,comments,shares,saved,plays" : "reach,likes,comments,shares,saved";
+              let ins = {};
+              try {
+                const insRes = await metaCall(ig.access_token, `${m.id}/insights`, { metric: metricList });
+                for (const row of insRes.data || []) {
+                  ins[row.name] = (row.values && row.values[0] && row.values[0].value) || 0;
+                }
+              } catch {
+                // Alguns formatos antigos (ex. álbum) não aceitam todas as métricas — ignora esse item.
+                continue;
+              }
+              savesTotal += Number(ins.saved || 0);
+              enriched.push({
+                id: m.id,
+                isReel,
+                caption: (m.caption || "").slice(0, 60),
+                thumb: m.thumbnail_url || (m.media_type === "IMAGE" ? m.media_url : null),
+                permalink: m.permalink,
+                views: isReel ? Number(ins.plays || 0) : Number(ins.reach || 0),
+                reach: Number(ins.reach || 0),
+                likes: Number(ins.likes || 0),
+                comments: Number(ins.comments || 0),
+                shares: Number(ins.shares || 0),
+                saved: Number(ins.saved || 0),
+              });
+            }
+            topPosts = enriched.filter((e) => !e.isReel).sort((a, b) => b.views - a.views).slice(0, 5);
+            topReels = enriched.filter((e) => e.isReel).sort((a, b) => b.views - a.views).slice(0, 5);
+            await Promise.all(
+              [...topPosts, ...topReels].map(async (p) => {
+                if (p.thumb) p.thumb = await proxyImageToDataUrl(p.thumb);
+              })
+            );
+          } catch {
+            // Sem permissão pra listar mídia, ou conta sem publicações no período — segue sem essa seção.
           }
 
           body.appendChild(el("div", { class: "source-badge" }, [
@@ -1485,8 +1570,14 @@ async function renderReport() {
             el("div", { class: "stat-label" }, "Seguidores"),
             el("div", { class: "stat-value" }, fmtNumber(profile.followers_count)),
           ]));
+          if (followerDelta != null) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Seguidores ganhos/perdidos"),
+              el("div", { class: "stat-value" }, `${followerDelta > 0 ? "+" : ""}${fmtNumber(followerDelta)}`),
+            ]));
+          }
           igGrid.appendChild(el("div", { class: "stat-tile" }, [
-            el("div", { class: "stat-label" }, "Publicações"),
+            el("div", { class: "stat-label" }, "Publicações (total)"),
             el("div", { class: "stat-value" }, fmtNumber(profile.media_count)),
           ]));
           if (reachTotal != null) {
@@ -1501,7 +1592,41 @@ async function renderReport() {
               el("div", { class: "stat-value" }, fmtNumber(profileViewsTotal)),
             ]));
           }
+          if (savesTotal != null) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Salvamentos no período"),
+              el("div", { class: "stat-value" }, fmtNumber(savesTotal)),
+            ]));
+          }
           body.appendChild(igGrid);
+
+          const renderMediaRow = (label, list) => {
+            if (!list.length) return;
+            const wrap = el("div", { style: "margin-top:16px;" });
+            wrap.appendChild(el("div", { class: "card-title", style: "font-size:14px;margin-bottom:10px;" }, label));
+            const grid = el("div", { class: "chart-grid", style: "grid-template-columns:repeat(auto-fill,minmax(150px,1fr));" });
+            for (const p of list) {
+              grid.appendChild(el("div", { class: "creative-card" }, [
+                p.thumb
+                  ? el("img", { src: p.thumb, alt: "" })
+                  : el("div", { style: "width:100%;aspect-ratio:1;background:#eef1f7;display:flex;align-items:center;justify-content:center;font-size:11px;color:#64748b;" }, "sem thumb"),
+                el("div", { class: "cc-body" }, [
+                  el("div", { class: "cc-leads" }, `${p.isReel ? "Plays" : "Alcance"}: ${fmtNumber(p.views)}`),
+                  el("div", { class: "small muted" }, `❤ ${fmtNumber(p.likes)} · 💬 ${fmtNumber(p.comments)} · ↗ ${fmtNumber(p.shares)} · 🔖 ${fmtNumber(p.saved)}`),
+                ]),
+              ]));
+            }
+            wrap.appendChild(grid);
+            body.appendChild(wrap);
+          };
+          renderMediaRow("Top 5 posts (por alcance)", topPosts);
+          renderMediaRow("Top 5 reels (por plays)", topReels);
+          if (!topPosts.length && !topReels.length) {
+            body.appendChild(el("div", { class: "small muted", style: "margin-top:8px;" },
+              "Sem posts/reels com dados suficientes no período selecionado."));
+          }
+          body.appendChild(el("div", { class: "small muted", style: "margin-top:6px;" },
+            "Stories não entram aqui: a API da Meta só mostra stories ativos (até 24h), então não é possível listar os mais vistos de períodos passados."));
         } catch (igErr) {
           body.appendChild(el("div", { class: "empty-state" }, `Não consegui carregar o Instagram @${ig.account_name}: ${igErr.message}`));
         }
@@ -1532,7 +1657,7 @@ $("#btn-export-pdf").addEventListener("click", async () => {
   btn.disabled = true;
   btn.textContent = "Gerando...";
   try {
-    const canvas = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff" });
+    const canvas = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff", useCORS: true, imageTimeout: 15000 });
     const imgData = canvas.toDataURL("image/png");
     const { jsPDF } = window.jspdf;
     // Página única (igual ao Reportei): em vez de recortar o conteúdo em várias folhas
