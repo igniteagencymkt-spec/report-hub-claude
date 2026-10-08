@@ -33,6 +33,7 @@ const METRIC_DEFS = [
   { key: "leads_by_day", label: "Leads por dia (evolução)" },
   { key: "region_leads", label: "Leads por região" },
   { key: "creative_thumbs", label: "Anúncios em destaque" },
+  { key: "instagram_profile", label: "Perfil do Instagram (seguidores, alcance)" },
 ];
 const DEFAULT_METRICS = METRIC_DEFS.map((m) => m.key);
 const CHART_COLORS = ["#c9a66b", "#16263d", "#7fa6c9", "#e0bd85", "#1f9d6c", "#c0392b", "#64748b"];
@@ -590,6 +591,8 @@ async function loadAccounts(clientId) {
   state.accounts = data || [];
 }
 
+const PLATFORM_LABELS = { meta: "Meta Ads", instagram: "Instagram" };
+
 function renderAccounts() {
   const box = $("#accounts-list");
   box.innerHTML = "";
@@ -598,10 +601,12 @@ function renderAccounts() {
     return;
   }
   for (const acc of state.accounts) {
+    const platformLabel = PLATFORM_LABELS[acc.platform] || acc.platform;
+    const idLabel = acc.platform === "instagram" ? `@${acc.account_name || acc.account_id}` : `act_${acc.account_id}`;
     const row = el("div", { class: "account-row" }, [
       el("div", {}, [
         el("div", {}, acc.account_name || acc.account_id),
-        el("div", { class: "account-meta" }, `act_${acc.account_id} · Meta Ads`),
+        el("div", { class: "account-meta" }, `${idLabel} · ${platformLabel}`),
       ]),
       el("button", {
         class: "btn btn-sm btn-danger",
@@ -620,12 +625,45 @@ async function removeAccount(id) {
   await renderReport();
 }
 
+// Lista de integrações — hoje só Meta Ads e Instagram estão disponíveis (ambos
+// via o mesmo login do Facebook); as demais ficam visíveis mas desabilitadas
+// até termos a conexão real de cada uma.
+const INTEGRATION_TYPES = [
+  { key: "meta", label: "Meta Ads", desc: "Investimento, leads, CTR, CPC, CPM, públicos e anúncios da conta de anúncio.", available: true },
+  { key: "instagram", label: "Instagram", desc: "Seguidores, alcance e visitas ao perfil do Instagram conectado via Facebook.", available: true },
+  { key: "google_ads", label: "Google Ads", desc: "Em breve.", available: false },
+  { key: "youtube", label: "YouTube", desc: "Em breve.", available: false },
+  { key: "tiktok_ads", label: "TikTok Ads", desc: "Em breve.", available: false },
+];
+
 $("#btn-connect-account").addEventListener("click", () => {
-  if (window.HUB_CONFIG.FB_APP_ID) {
-    connectViaFacebookLogin();
-  } else {
-    connectViaManualToken();
-  }
+  const wrap = el("div", { class: "metric-options", style: "grid-template-columns:1fr;" },
+    INTEGRATION_TYPES.map((it) => {
+      const row = el("div", {
+        class: "metric-opt",
+        style: it.available ? "cursor:pointer;" : "opacity:0.5;cursor:not-allowed;",
+      }, [
+        el("div", {}, [
+          el("div", { style: "font-weight:600;" }, it.label + (it.available ? "" : " (em breve)")),
+          el("div", { class: "small muted" }, it.desc),
+        ]),
+      ]);
+      if (it.available) {
+        row.addEventListener("click", () => {
+          closeModal();
+          if (window.HUB_CONFIG.FB_APP_ID) {
+            connectViaFacebookLogin(it.key);
+          } else if (it.key === "meta") {
+            connectViaManualToken();
+          } else {
+            toast("Conecte um App ID do Facebook (config.js) pra usar login real e integrar o Instagram.", true);
+          }
+        });
+      }
+      return row;
+    })
+  );
+  openModal("Nova integração", wrap, async () => {}, "Fechar"); // clicar no item já conecta; o botão só fecha
 });
 
 function connectViaManualToken() {
@@ -653,16 +691,18 @@ function connectViaManualToken() {
   }, "Conectar");
 }
 
-async function saveConnectedAccount(accountId, accountName, token) {
+async function saveConnectedAccount(accountId, accountName, token, platform = "meta", extra = {}) {
   const { error } = await sb.from("hub_connected_accounts").insert({
     user_id: state.user.id,
     client_id: state.currentClientId,
+    platform,
     account_id: accountId,
     account_name: accountName || null,
     access_token: token,
+    ...extra,
   });
   if (error) throw error;
-  toast(`Conta "${accountName || accountId}" conectada.`);
+  toast(`"${accountName || accountId}" conectado.`);
   await loadAccounts(state.currentClientId);
   renderAccounts();
   await renderReport();
@@ -670,10 +710,13 @@ async function saveConnectedAccount(accountId, accountName, token) {
 
 // ---- Login real com Facebook (só você loga — nunca o cliente) ----
 // Acesso Padrão da Meta: funciona porque quem autentica é o admin deste app.
-async function connectViaFacebookLogin() {
+// Um único login cobre as duas integrações (Meta Ads e Instagram) — o escopo
+// pedido já inclui as permissões das duas, então não precisa logar de novo
+// pra trocar de plataforma.
+async function connectViaFacebookLogin(platform = "meta") {
   const redirectUri = window.location.origin + window.location.pathname;
   const oauthState = Math.random().toString(36).slice(2);
-  const scope = "ads_read,business_management";
+  const scope = "ads_read,business_management,pages_show_list,pages_read_engagement,instagram_basic,instagram_manage_insights";
   const url =
     `https://www.facebook.com/${window.HUB_CONFIG.FB_API_VERSION}/dialog/oauth` +
     `?client_id=${encodeURIComponent(window.HUB_CONFIG.FB_APP_ID)}` +
@@ -711,13 +754,30 @@ async function connectViaFacebookLogin() {
   }
 
   try {
-    toast("Login feito. Buscando suas contas de anúncio...");
+    toast("Login feito. Buscando suas contas...");
     const { data, error } = await sb.functions.invoke("meta-oauth-exchange", {
       body: { code, redirect_uri: redirectUri },
     });
     if (error) throw new Error(error.message || "Falha ao trocar o código pelo token.");
     if (data && data.error) throw new Error(data.error);
     const token = data.access_token;
+
+    if (platform === "instagram") {
+      // Instagram não é uma "conta" própria na API — é um Instagram Business Account
+      // pendurado numa Página do Facebook. Por isso buscamos as Páginas que esse login
+      // administra e filtramos só as que têm um Instagram profissional conectado.
+      const pages = await metaCall(token, "me/accounts", {
+        fields: "name,access_token,instagram_business_account{id,username,profile_picture_url}",
+        limit: 200,
+      });
+      const withIg = (pages.data || []).filter((p) => p.instagram_business_account);
+      if (!withIg.length) {
+        toast("Login funcionou, mas nenhuma Página desse usuário tem um Instagram profissional conectado.", true);
+        return;
+      }
+      openInstagramPicker(withIg);
+      return;
+    }
 
     const accounts = await metaCall(token, "me/adaccounts", { fields: "name,account_id,currency", limit: 200 });
     if (!accounts.data || !accounts.data.length) {
@@ -746,6 +806,32 @@ function openAccountPicker(token, accounts) {
     const chosen = accounts.find((a) => String(a.account_id).replace(/^act_/, "") === accountId);
     try {
       await saveConnectedAccount(accountId, chosen && chosen.name, token);
+    } catch (err) {
+      toast(err.message || "Não consegui salvar essa conta.", true);
+      return false;
+    }
+  }, "Conectar");
+}
+
+function openInstagramPicker(pages) {
+  const select = el("select", {});
+  for (const p of pages) {
+    const ig = p.instagram_business_account;
+    select.appendChild(el("option", { value: ig.id }, `@${ig.username} (via página "${p.name}")`));
+  }
+  const wrap = el("div", {}, [
+    el("label", {}, "Conta do Instagram"),
+    select,
+    el("p", { class: "small muted" }, "Instagram profissional conectado às Páginas do Facebook que esse login administra. Escolha a do cliente."),
+  ]);
+  openModal("Escolher conta do Instagram", wrap, async () => {
+    const igId = select.value;
+    const chosenPage = pages.find((p) => p.instagram_business_account.id === igId);
+    const ig = chosenPage.instagram_business_account;
+    try {
+      // O token que vale pra chamadas de Instagram é o da Página (chosenPage.access_token),
+      // não o token de usuário do login — guardamos ele aqui.
+      await saveConnectedAccount(ig.id, ig.username, chosenPage.access_token, "instagram", { business_id: chosenPage.id });
     } catch (err) {
       toast(err.message || "Não consegui salvar essa conta.", true);
       return false;
@@ -975,7 +1061,10 @@ async function renderReport() {
     const customEvents = state.reportConfig?.custom_events || [];
     const customTotals = new Map(customEvents.map((e) => [e.action_type, 0]));
 
-    for (const acc of state.accounts) {
+    const metaAccounts = state.accounts.filter((a) => a.platform === "meta");
+    const igAccounts = state.accounts.filter((a) => a.platform === "instagram");
+
+    for (const acc of metaAccounts) {
       const [accInfo, insights, prevInsights, regionInsights, platformInsights, genderInsights, ageInsights, dailyInsights, ads] = await Promise.all([
         metaCall(acc.access_token, `act_${acc.account_id}`, {
           fields: "name,currency",
@@ -1133,10 +1222,9 @@ async function renderReport() {
 
     body.innerHTML = "";
 
-    // Selo de origem dos dados: hoje só existe Meta Ads conectado, então fica fixo.
-    // Quando Instagram/Google/YouTube forem conectados como fontes próprias, cada bloco
-    // de métricas correspondente ganha o selo da sua própria plataforma aqui.
-    if (metrics.size) {
+    // Selo de origem dos dados do bloco de anúncios (Meta Ads). O Instagram, mais abaixo,
+    // tem o próprio selo — cada integração mostra a métrica junto da sua própria origem.
+    if (metrics.size && metaAccounts.length) {
       body.appendChild(el("div", { class: "source-badge" }, [
         el("span", { class: "source-badge-dot" }),
         "Métricas de Meta Ads",
@@ -1341,6 +1429,62 @@ async function renderReport() {
       body.appendChild(card);
     }
 
+    // Instagram (perfil conectado via Facebook) — seção própria, com seu próprio selo de origem
+    if (metrics.has("instagram_profile") && igAccounts.length) {
+      for (const ig of igAccounts) {
+        try {
+          const profile = await metaCall(ig.access_token, ig.account_id, {
+            fields: "username,followers_count,media_count,profile_picture_url",
+          });
+          let reachTotal = null, profileViewsTotal = null;
+          try {
+            const igInsights = await metaCall(ig.access_token, `${ig.account_id}/insights`, {
+              metric: "reach,profile_views",
+              period: "day",
+              since: range.since,
+              until: range.until,
+            });
+            for (const m of igInsights.data || []) {
+              const sum = (m.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
+              if (m.name === "reach") reachTotal = sum;
+              if (m.name === "profile_views") profileViewsTotal = sum;
+            }
+          } catch {
+            // Conta recém-conectada ou sem permissão de insights ainda — mostra só o perfil.
+          }
+
+          body.appendChild(el("div", { class: "source-badge" }, [
+            el("span", { class: "source-badge-dot", style: "background:#e1306c;" }),
+            `Instagram · @${profile.username}`,
+          ]));
+          const igGrid = el("div", { class: "stat-grid" });
+          igGrid.appendChild(el("div", { class: "stat-tile" }, [
+            el("div", { class: "stat-label" }, "Seguidores"),
+            el("div", { class: "stat-value" }, fmtNumber(profile.followers_count)),
+          ]));
+          igGrid.appendChild(el("div", { class: "stat-tile" }, [
+            el("div", { class: "stat-label" }, "Publicações"),
+            el("div", { class: "stat-value" }, fmtNumber(profile.media_count)),
+          ]));
+          if (reachTotal != null) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Alcance no período"),
+              el("div", { class: "stat-value" }, fmtNumber(reachTotal)),
+            ]));
+          }
+          if (profileViewsTotal != null) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Visitas ao perfil"),
+              el("div", { class: "stat-value" }, fmtNumber(profileViewsTotal)),
+            ]));
+          }
+          body.appendChild(igGrid);
+        } catch (igErr) {
+          body.appendChild(el("div", { class: "empty-state" }, `Não consegui carregar o Instagram @${ig.account_name}: ${igErr.message}`));
+        }
+      }
+    }
+
     // Banner da agência (rodapé do relatório, configurado em "Minha conta")
     if (state.agencySettings?.banner_url) {
       body.appendChild(el("div", { class: "report-banner" }, [
@@ -1368,21 +1512,19 @@ $("#btn-export-pdf").addEventListener("click", async () => {
     const canvas = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff" });
     const imgData = canvas.toDataURL("image/png");
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgWidth = pageWidth - 40;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-    let heightLeft = imgHeight;
-    let position = 20;
-    pdf.addImage(imgData, "PNG", 20, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight + 20;
-      pdf.addPage();
-      pdf.addImage(imgData, "PNG", 20, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-    }
+    // Página única (igual ao Reportei): em vez de recortar o conteúdo em várias folhas
+    // A4, o tamanho da própria página do PDF é calculado pra caber o relatório inteiro
+    // de uma vez, com uma margem fixa de 20pt em volta.
+    const margin = 20;
+    const pageWidthPt = 595.28; // largura A4 em pt — mantém a largura de leitura padrão
+    const imgWidthPt = pageWidthPt - margin * 2;
+    const imgHeightPt = (canvas.height * imgWidthPt) / canvas.width;
+    const pdf = new jsPDF({
+      orientation: imgHeightPt > imgWidthPt ? "portrait" : "landscape",
+      unit: "pt",
+      format: [pageWidthPt, imgHeightPt + margin * 2],
+    });
+    pdf.addImage(imgData, "PNG", margin, margin, imgWidthPt, imgHeightPt);
     const client = state.clients.find((c) => c.id === state.currentClientId);
     const filename = `relatorio-${(client?.name || "cliente").toLowerCase().replace(/\s+/g, "-")}-${new Date().toISOString().slice(0,10)}.pdf`;
     pdf.save(filename);
