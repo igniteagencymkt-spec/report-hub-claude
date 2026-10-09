@@ -369,6 +369,8 @@ $("#btn-account").addEventListener("click", () => {
       el("label", {}, "Banner da agência (aparece no rodapé de todos os relatórios)"),
       bannerPreview,
       bannerFileInput,
+      el("p", { class: "small muted", style: "margin-top:4px;" },
+        "Tamanho recomendado: 1600 x 400px (proporção 4:1) — uma faixa comprida, como no relatório do Reportei. Formato JPG ou PNG."),
     ]),
   ]);
 
@@ -549,6 +551,8 @@ $("#btn-edit-client").addEventListener("click", () => {
     nameInput,
     el("label", {}, "Logo do cliente (aparece no relatório)"),
     fileInput,
+    el("p", { class: "small muted", style: "margin-top:4px;" },
+      "Tamanho recomendado: 400 x 400px (quadrada) — aparece em formato circular no topo do relatório. Formato JPG ou PNG, de preferência com fundo liso ou transparente."),
     el("div", { style: "margin-top:20px;padding-top:16px;border-top:1px solid var(--border);" }, [
       el("p", { class: "small muted", style: "margin-bottom:10px;" }, "Zona de risco"),
       deleteBtn,
