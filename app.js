@@ -143,14 +143,18 @@ function getPreviousRange(since, until) {
   return { since: fmtDate(prevSince), until: fmtDate(prevUntil) };
 }
 
-function deltaBadge(current, previous) {
+// "up" decide a cor/seta do badge (verde = bom, vermelho = ruim) — não é sempre "aumentou".
+// Pra métricas de custo (custo por lead, CPC, CPM) é o contrário: subir é ruim, cair é bom.
+// Passe invert:true pra essas.
+function deltaBadge(current, previous, invert = false) {
   if (previous == null || previous === 0) {
     if (!current) return null;
-    return { text: "novo", up: true };
+    return { text: "novo", up: !invert };
   }
   const pct = ((current - previous) / Math.abs(previous)) * 100;
   if (Math.abs(pct) < 0.01) return { text: "0%", up: true };
-  return { text: `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`, up: pct > 0 };
+  const increased = pct > 0;
+  return { text: `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`, up: invert ? !increased : increased };
 }
 
 let state = {
@@ -195,6 +199,14 @@ const INSTAGRAM_ICON_SVG = `<svg viewBox="0 0 36 36" width="20" height="20" xmln
   <circle cx="18" cy="18" r="4.2" fill="none" stroke="#fff" stroke-width="1.6"/>
   <circle cx="23.3" cy="12.7" r="1.1" fill="#fff"/>
 </svg>`;
+
+// Ícones outline no estilo do Instagram pra cada métrica de post/reel (curtidas, comentários,
+// compartilhamentos, salvamentos) — usados no lugar de emojis genéricos.
+const ICON_LIKE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M20.8 8.6c0 4.1-5.1 8-8.8 10.9-3.7-2.9-8.8-6.8-8.8-10.9a4.9 4.9 0 0 1 8.8-3 4.9 4.9 0 0 1 8.8 3z"/></svg>`;
+const ICON_COMMENT = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M20.7 12c0 4.5-3.9 8.2-8.7 8.2-1.2 0-2.4-.2-3.5-.6l-4.7 1.4 1.4-4.2a8.1 8.1 0 0 1-1.9-4.8C3.3 7.5 7.2 3.8 12 3.8s8.7 3.7 8.7 8.2z"/></svg>`;
+const ICON_SHARE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><line x1="22" y1="3" x2="9.5" y2="15"/><path d="M22 3 15 21l-6-6-6-6z"/></svg>`;
+const ICON_SAVE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M19 21 12 16l-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`;
+const mediaIcon = (svg) => `<span style="display:inline-flex;vertical-align:-2px;margin-right:2px;">${svg}</span>`;
 
 function $(sel) { return document.querySelector(sel); }
 function el(tag, attrs = {}, children = []) {
@@ -299,7 +311,16 @@ async function proxyImageToDataUrl(imageUrl) {
 
 // ---------------- Auth ----------------
 
+// A Supabase JS revalida a sessão (TOKEN_REFRESHED/INITIAL_SESSION) toda vez que a aba
+// volta a ficar em foco — não só quando a pessoa realmente loga/desloga. Sem esse filtro,
+// cada "sair e voltar na aba" recarregava o relatório inteiro do zero (chamando a API da
+// Meta de novo) e, se o carregamento anterior ainda não tivesse terminado, os dois rodavam
+// juntos e duplicavam seções (foi o que causou o bloco do Instagram aparecer duas vezes).
+let lastAuthUserId = undefined;
 sb.auth.onAuthStateChange((_event, session) => {
+  const newUserId = session ? session.user.id : null;
+  if (newUserId === lastAuthUserId) return; // mesmo usuário — só revalidação de token, ignora
+  lastAuthUserId = newUserId;
   state.user = session ? session.user : null;
   renderAuthState();
 });
@@ -443,7 +464,10 @@ async function loadClients() {
   if (!state.currentClientId && state.clients.length) {
     selectClient(state.clients[0].id);
   } else if (state.currentClientId) {
-    selectClient(state.currentClientId);
+    // Cliente já está selecionado e na tela — não refaz o fetch/render do relatório
+    // (isso é o que recarregava tudo de novo só por ter saído e voltado na aba).
+    const stillExists = state.clients.some((c) => c.id === state.currentClientId);
+    if (!stillExists) selectClient(state.clients[0]?.id || null);
   } else {
     $("#view-empty").classList.remove("hidden");
     $("#view-client").classList.add("hidden");
@@ -1068,9 +1092,17 @@ function genderLabel(g) {
   return { male: "Masculino", female: "Feminino", unknown: "Desconhecido" }[g] || g;
 }
 
+// Guarda de reentrância: se uma nova chamada de renderReport() começar antes de uma
+// anterior terminar (ex.: o usuário trocou de cliente, ou algum evento disparou o render
+// de novo), a chamada antiga precisa desistir de escrever no body assim que notar que não
+// é mais a mais recente — senão as duas ficam escrevendo no mesmo body e tudo sai duplicado.
+let reportRenderToken = 0;
+
 async function renderReport() {
+  const myRenderToken = ++reportRenderToken;
   const body = $("#report-body");
   if (!state.accounts.length) {
+    if (myRenderToken !== reportRenderToken) return;
     body.innerHTML = "";
     body.appendChild(el("div", { class: "empty-state" }, "Conecte uma conta pra ver o relatório aqui."));
     return;
@@ -1284,6 +1316,7 @@ async function renderReport() {
     const ageOrder = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
     const agesSorted = [...ageMap.entries()].sort((a, b) => ageOrder.indexOf(a[0]) - ageOrder.indexOf(b[0]));
 
+    if (myRenderToken !== reportRenderToken) return; // uma chamada mais nova já assumiu o body
     body.innerHTML = "";
 
     // Selo de origem dos dados do bloco de anúncios (Meta Ads). O Instagram, mais abaixo,
@@ -1299,11 +1332,13 @@ async function renderReport() {
     const tileDefs = [];
     if (metrics.has("spend")) tileDefs.push(["Investimento", fmtMoney(totalSpend, currency), deltaBadge(totalSpend, prevSpend)]);
     if (metrics.has("leads")) tileDefs.push(["Leads", fmtNumber(totalLeads), deltaBadge(totalLeads, prevLeads)]);
-    if (metrics.has("cpl")) tileDefs.push(["CPL", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl) : null]);
+    // Custo (custo por lead, CPC, CPM): subir é ruim, cair é bom — por isso invert:true.
+    // Volume/taxa (leads, CTR, cliques no link): subir é bom, cair é ruim — fica como está.
+    if (metrics.has("cpl")) tileDefs.push(["Custo por lead", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl, true) : null]);
     if (metrics.has("ctr")) tileDefs.push(["CTR", fmtPct(ctr), ctr != null && prevCtr != null ? deltaBadge(ctr, prevCtr) : null]);
     if (metrics.has("clicks")) tileDefs.push(["Cliques no link", fmtNumber(totalClicks), deltaBadge(totalClicks, prevClicks)]);
-    if (metrics.has("cpc")) tileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc) : null]);
-    if (metrics.has("cpm")) tileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm) : null]);
+    if (metrics.has("cpc")) tileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc, true) : null]);
+    if (metrics.has("cpm")) tileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm, true) : null]);
     for (const ce of customEvents) {
       tileDefs.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0), null]);
     }
@@ -1352,7 +1387,7 @@ async function renderReport() {
       card.appendChild(el("div", { class: "card-title" }, "Métricas por plataforma"));
       const table = el("table", { class: "region-table" });
       table.appendChild(el("tr", {}, [
-        el("th", {}, "Plataforma"), el("th", {}, "Leads"), el("th", {}, "Custo/lead"), el("th", {}, "CTR"),
+        el("th", {}, "Plataforma"), el("th", {}, "Leads"), el("th", {}, "Custo por lead"), el("th", {}, "CTR"),
         el("th", {}, "CPC"), el("th", {}, "CPM"), el("th", {}, "Cliques no link"),
       ]));
       for (const [platform, v] of platformMap.entries()) {
@@ -1429,7 +1464,7 @@ async function renderReport() {
         table.appendChild(el("tr", {}, [
           el("th", {}, "Anúncio"),
           el("th", {}, "Leads"),
-          el("th", {}, "Custo/lead"),
+          el("th", {}, "Custo por lead"),
           el("th", {}, "Investimento"),
           el("th", {}, "CTR"),
           el("th", {}, "CPC"),
@@ -1473,6 +1508,7 @@ async function renderReport() {
           el("th", {}, "Região"),
           el("th", {}, "Leads"),
           el("th", {}, "Custo por lead"),
+          el("th", {}, "CTR"),
           el("th", {}, "Cliques no link"),
           el("th", {}, "Custo por clique"),
           el("th", {}, "Investimento"),
@@ -1481,10 +1517,12 @@ async function renderReport() {
           const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
           const regionCpl = r.leads > 0 ? r.spend / r.leads : null;
           const regionCpc = r.clicks > 0 ? r.spend / r.clicks : null;
+          const regionCtr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : null;
           table.appendChild(el("tr", {}, [
             el("td", {}, r.region),
             el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
             el("td", {}, regionCpl != null ? fmtMoney(regionCpl, currency) : "—"),
+            el("td", {}, fmtPct(regionCtr)),
             el("td", {}, fmtNumber(r.clicks)),
             el("td", {}, regionCpc != null ? fmtMoney(regionCpc, currency) : "—"),
             el("td", {}, fmtMoney(r.spend, currency)),
@@ -1496,12 +1534,19 @@ async function renderReport() {
     }
 
     // Instagram (perfil conectado via Facebook) — seção própria, com seu próprio selo de origem
+    if (myRenderToken !== reportRenderToken) return;
     if (metrics.has("instagram_profile") && igAccounts.length) {
       for (const ig of igAccounts) {
+        if (myRenderToken !== reportRenderToken) return;
         try {
           const profile = await metaCall(ig.access_token, ig.account_id, {
             fields: "username,followers_count,media_count,profile_picture_url",
           });
+          // A documentação da Meta pra Insights do Instagram usa since/until como timestamp
+          // Unix (não "AAAA-MM-DD") — é o mesmo formato já usado na busca de mídia abaixo.
+          const sinceTs = Math.floor(new Date(`${range.since}T00:00:00Z`).getTime() / 1000);
+          const untilTs = Math.floor(new Date(`${range.until}T23:59:59Z`).getTime() / 1000);
+
           let reachTotal = null, profileViewsTotal = null, followerDelta = null;
           // Pedidos separados (não um só com os 3 métricas juntas): a API da Meta passou a
           // exigir "metric_type=time_series" pra devolver o valor por dia (sem isso, alguns
@@ -1513,8 +1558,8 @@ async function renderReport() {
               metric: "reach,profile_views",
               period: "day",
               metric_type: "time_series",
-              since: range.since,
-              until: range.until,
+              since: sinceTs,
+              until: untilTs,
             });
             for (const m of igInsights.data || []) {
               const sum = (m.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
@@ -1529,8 +1574,8 @@ async function renderReport() {
               metric: "follower_count",
               period: "day",
               metric_type: "time_series",
-              since: range.since,
-              until: range.until,
+              since: sinceTs,
+              until: untilTs,
             });
             // Cada dia vem com a variação (ganho/perda) daquele dia — somando o período
             // inteiro dá o saldo líquido de seguidores ganhos/perdidos.
@@ -1541,11 +1586,10 @@ async function renderReport() {
           }
 
           // Busca as publicações do período (posts e reels) pra "Destaques do Instagram":
-          // top 5 por alcance de cada tipo + total de salvamentos no período.
-          let topPosts = [], topReels = [], savesTotal = null;
+          // top 5 por alcance de cada tipo + totais do período (salvamentos, curtidas,
+          // compartilhamentos, nº de publicações).
+          let topPosts = [], topReels = [], savesTotal = null, likesTotalPeriod = 0, sharesTotalPeriod = 0, postsInPeriod = null;
           try {
-            const sinceTs = Math.floor(new Date(`${range.since}T00:00:00Z`).getTime() / 1000);
-            const untilTs = Math.floor(new Date(`${range.until}T23:59:59Z`).getTime() / 1000);
             const mediaList = await metaCall(ig.access_token, `${ig.account_id}/media`, {
               fields: "id,caption,media_type,media_product_type,thumbnail_url,media_url,permalink,timestamp",
               since: sinceTs,
@@ -1587,6 +1631,8 @@ async function renderReport() {
                 }
               }
               savesTotal += Number(ins.saved || 0);
+              likesTotalPeriod += Number(ins.likes || 0);
+              sharesTotalPeriod += Number(ins.shares || 0);
               enriched.push({
                 id: m.id,
                 isReel,
@@ -1601,6 +1647,7 @@ async function renderReport() {
                 saved: Number(ins.saved || 0),
               });
             }
+            postsInPeriod = enriched.length;
             topPosts = enriched.filter((e) => !e.isReel).sort((a, b) => b.views - a.views).slice(0, 5);
             topReels = enriched.filter((e) => e.isReel).sort((a, b) => b.views - a.views).slice(0, 5);
             await Promise.all(
@@ -1627,10 +1674,12 @@ async function renderReport() {
               el("div", { class: "stat-value" }, `${followerDelta > 0 ? "+" : ""}${fmtNumber(followerDelta)}`),
             ]));
           }
-          igGrid.appendChild(el("div", { class: "stat-tile" }, [
-            el("div", { class: "stat-label" }, "Publicações (total)"),
-            el("div", { class: "stat-value" }, fmtNumber(profile.media_count)),
-          ]));
+          if (postsInPeriod != null) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Publicações no período"),
+              el("div", { class: "stat-value" }, fmtNumber(postsInPeriod)),
+            ]));
+          }
           if (reachTotal != null) {
             igGrid.appendChild(el("div", { class: "stat-tile" }, [
               el("div", { class: "stat-label" }, "Alcance no período"),
@@ -1641,6 +1690,16 @@ async function renderReport() {
             igGrid.appendChild(el("div", { class: "stat-tile" }, [
               el("div", { class: "stat-label" }, "Visitas ao perfil"),
               el("div", { class: "stat-value" }, fmtNumber(profileViewsTotal)),
+            ]));
+          }
+          if (postsInPeriod) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Curtidas no período"),
+              el("div", { class: "stat-value" }, fmtNumber(likesTotalPeriod)),
+            ]));
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Compartilhamentos no período"),
+              el("div", { class: "stat-value" }, fmtNumber(sharesTotalPeriod)),
             ]));
           }
           if (savesTotal != null) {
@@ -1663,7 +1722,9 @@ async function renderReport() {
                   : el("div", { style: "width:100%;aspect-ratio:1;background:#eef1f7;display:flex;align-items:center;justify-content:center;font-size:11px;color:#64748b;" }, "sem thumb"),
                 el("div", { class: "cc-body" }, [
                   el("div", { class: "cc-leads" }, `${p.isReel ? "Plays" : "Alcance"}: ${fmtNumber(p.views)}`),
-                  el("div", { class: "small muted" }, `❤ ${fmtNumber(p.likes)} · 💬 ${fmtNumber(p.comments)} · ↗ ${fmtNumber(p.shares)} · 🔖 ${fmtNumber(p.saved)}`),
+                  el("div", { class: "small muted", html:
+                    `${mediaIcon(ICON_LIKE)}${fmtNumber(p.likes)} &nbsp; ${mediaIcon(ICON_COMMENT)}${fmtNumber(p.comments)} &nbsp; ${mediaIcon(ICON_SHARE)}${fmtNumber(p.shares)} &nbsp; ${mediaIcon(ICON_SAVE)}${fmtNumber(p.saved)}`
+                  }),
                 ]),
               ]));
             }
@@ -1685,6 +1746,7 @@ async function renderReport() {
     }
 
     // Banner da agência (rodapé do relatório, configurado em "Minha conta")
+    if (myRenderToken !== reportRenderToken) return;
     if (state.agencySettings?.banner_url) {
       body.appendChild(el("div", { class: "report-banner" }, [
         el("img", { src: state.agencySettings.banner_url, alt: "" }),
@@ -1695,6 +1757,7 @@ async function renderReport() {
       body.appendChild(el("div", { class: "empty-state" }, "Nenhuma métrica selecionada. Clique em \"Métricas\" pra escolher o que aparece aqui."));
     }
   } catch (err) {
+    if (myRenderToken !== reportRenderToken) return; // chamada antiga — deixa o render atual em paz
     body.innerHTML = "";
     body.appendChild(el("div", { class: "empty-state" }, `Não consegui carregar os dados: ${err.message}`));
   }

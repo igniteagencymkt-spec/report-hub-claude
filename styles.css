@@ -231,8 +231,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
   margin-bottom: 24px;
 }
 .report-header #report-logo {
-  width: 84px;
-  height: 84px;
+  width: 96px;
+  height: 96px;
+  min-width: 96px;
+  min-height: 96px;
   border-radius: 50%;
   object-fit: cover;
   border: 1px solid var(--border);
@@ -467,7 +469,7 @@ table.region-table tr:last-child td { border-bottom: none; }
 .muted { color: var(--mist); }
 .small { font-size: 12px; }
 
-#report-print-area { background: #ffffff; color: var(--ink); }
+#report-print-area { background: #ffffff; color: var(--ink); padding-top: 28px; }
 
 /* ---------- Modal ---------- */
 #modal-backdrop .card {
