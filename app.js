@@ -329,9 +329,26 @@ async function metaCall(accessToken, path, params = {}) {
   const { data, error } = await sb.functions.invoke("meta-proxy", {
     body: { access_token: accessToken, path, params },
   });
-  if (error) throw new Error(error.message || "Falha ao chamar a Meta API.");
+  if (error) throw new Error(await realEdgeErrorMessage(error));
   if (data && data.error) throw new Error(data.error);
   return data;
+}
+
+// supabase-js, quando a Edge Function responde com status != 2xx, joga um erro cujo
+// `.message` é só o texto genérico "Edge Function returned a non-2xx status code" — o
+// corpo real que a function devolveu (ex.: { error: "<mensagem de verdade da Graph API>" })
+// fica em `error.context`, que é a Response bruta. Sem ler esse corpo, qualquer falha da
+// Meta API aparece pro usuário só como esse texto genérico, sem nenhuma pista do que corrigir.
+async function realEdgeErrorMessage(error) {
+  try {
+    if (error?.context && typeof error.context.json === "function") {
+      const body = await error.context.clone().json();
+      if (body?.error) return body.error;
+    }
+  } catch {
+    // Corpo não veio em JSON (ou já foi consumido) — segue com a mensagem genérica abaixo.
+  }
+  return error?.message || "Falha ao chamar a Meta API.";
 }
 
 // O CDN da Meta não libera CORS pra leitura via canvas, então imagens (thumbnails de
@@ -1376,32 +1393,39 @@ async function renderReport() {
       ]));
     }
 
-    // Stat tiles (com variação vs período anterior)
-    const tileDefs = [];
-    if (metrics.has("spend")) tileDefs.push(["Investimento", fmtMoney(totalSpend, currency), deltaBadge(totalSpend, prevSpend)]);
-    if (metrics.has("leads")) tileDefs.push(["Leads", fmtNumber(totalLeads), deltaBadge(totalLeads, prevLeads)]);
+    // Stat tiles (com variação vs período anterior). Investimento, Leads e Custo por lead
+    // são as 3 métricas principais — ficam maiores, sozinhas na primeira linha; as demais
+    // vão numa segunda linha, no tamanho padrão.
+    const primaryTileDefs = [];
+    const secondaryTileDefs = [];
+    if (metrics.has("spend")) primaryTileDefs.push(["Investimento", fmtMoney(totalSpend, currency), deltaBadge(totalSpend, prevSpend)]);
+    if (metrics.has("leads")) primaryTileDefs.push(["Leads", fmtNumber(totalLeads), deltaBadge(totalLeads, prevLeads)]);
     // Custo (custo por lead, CPC, CPM): subir é ruim, cair é bom — por isso invert:true.
     // Volume/taxa (leads, CTR, cliques no link): subir é bom, cair é ruim — fica como está.
-    if (metrics.has("cpl")) tileDefs.push(["Custo por lead", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl, "invert") : null]);
-    if (metrics.has("ctr")) tileDefs.push(["CTR", fmtPct(ctr), ctr != null && prevCtr != null ? deltaBadge(ctr, prevCtr) : null]);
-    if (metrics.has("clicks")) tileDefs.push(["Cliques no link", fmtNumber(totalClicks), deltaBadge(totalClicks, prevClicks)]);
-    if (metrics.has("cpc")) tileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc, "invert") : null]);
-    if (metrics.has("cpm")) tileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm, "neutral") : null]);
+    if (metrics.has("cpl")) primaryTileDefs.push(["Custo por lead", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl, "invert") : null]);
+    if (metrics.has("ctr")) secondaryTileDefs.push(["CTR", fmtPct(ctr), ctr != null && prevCtr != null ? deltaBadge(ctr, prevCtr) : null]);
+    if (metrics.has("clicks")) secondaryTileDefs.push(["Cliques no link", fmtNumber(totalClicks), deltaBadge(totalClicks, prevClicks)]);
+    if (metrics.has("cpc")) secondaryTileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc, "invert") : null]);
+    if (metrics.has("cpm")) secondaryTileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm, "neutral") : null]);
     for (const ce of customEvents) {
-      tileDefs.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0), null]);
+      secondaryTileDefs.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0), null]);
     }
-    if (tileDefs.length) {
+    const buildTile = (label, value, delta, lg) => el("div", { class: "stat-tile" + (lg ? " stat-tile-lg" : "") }, [
+      el("div", { class: "stat-label" }, label),
+      el("div", { class: "stat-value" }, value),
+      delta
+        ? el("div", { class: "stat-delta " + (delta.good === null ? "neutral" : delta.good ? "up" : "down") },
+            (delta.increased ? "▲ " : "▼ ") + delta.text)
+        : null,
+    ]);
+    if (primaryTileDefs.length) {
+      const grid = el("div", { class: "stat-grid stat-grid-primary" });
+      for (const [label, value, delta] of primaryTileDefs) grid.appendChild(buildTile(label, value, delta, true));
+      body.appendChild(grid);
+    }
+    if (secondaryTileDefs.length) {
       const grid = el("div", { class: "stat-grid" });
-      for (const [label, value, delta] of tileDefs) {
-        grid.appendChild(el("div", { class: "stat-tile" }, [
-          el("div", { class: "stat-label" }, label),
-          el("div", { class: "stat-value" }, value),
-          delta
-            ? el("div", { class: "stat-delta " + (delta.good === null ? "neutral" : delta.good ? "up" : "down") },
-                (delta.increased ? "▲ " : "▼ ") + delta.text)
-            : null,
-        ]));
-      }
+      for (const [label, value, delta] of secondaryTileDefs) grid.appendChild(buildTile(label, value, delta, false));
       body.appendChild(grid);
     }
 
@@ -1589,7 +1613,7 @@ async function renderReport() {
           const sinceTs = Math.floor(new Date(`${range.since}T00:00:00Z`).getTime() / 1000);
           const untilTs = Math.floor(new Date(`${range.until}T23:59:59Z`).getTime() / 1000);
 
-          let reachTotal = null, profileViewsTotal = null, followerDelta = null, followerError = null;
+          let reachTotal = null, profileViewsTotal = null, followerDelta = null, followerError = null, previousFollowers = null;
           // Pedidos separados (não um só com os 3 métricas juntas): a API da Meta passou a
           // exigir "metric_type=time_series" pra devolver o valor por dia (sem isso, alguns
           // metrics vêm só com o total agregado ou a chamada falha quando combinada com
@@ -1612,21 +1636,35 @@ async function renderReport() {
             // Conta recém-conectada ou sem permissão de insights ainda — segue sem essas duas.
           }
           try {
-            const followerInsights = await metaCall(ig.access_token, `${ig.account_id}/insights`, {
-              metric: "follower_count",
-              period: "day",
-              metric_type: "time_series",
-              since: sinceTs,
-              until: untilTs,
-            });
-            // Cada dia vem com a variação (ganho/perda) daquele dia — somando o período
-            // inteiro dá o saldo líquido de seguidores ganhos/perdidos.
-            const row = (followerInsights.data || [])[0];
-            if (row) followerDelta = (row.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
+            // "follower_count" não tem dado pro dia de hoje (é fechado só no dia seguinte) —
+            // pedir até "hoje às 23:59" é rejeitado pela API. Limita o "until" até o fim de
+            // ontem; se o período pedido for só hoje, não dá nem pra tentar a chamada.
+            const startOfTodayUTC = Math.floor(new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`).getTime() / 1000);
+            const followerUntilTs = Math.min(untilTs, startOfTodayUTC - 1);
+            if (followerUntilTs < sinceTs) {
+              followerError = "Sem dados de seguidores ainda pro dia de hoje (a Meta só fecha esse número no dia seguinte).";
+            } else {
+              const followerInsights = await metaCall(ig.access_token, `${ig.account_id}/insights`, {
+                metric: "follower_count",
+                period: "day",
+                metric_type: "time_series",
+                since: sinceTs,
+                until: followerUntilTs,
+              });
+              // Cada dia vem com a variação (ganho/perda) daquele dia — somando o período
+              // inteiro dá o saldo líquido de seguidores ganhos/perdidos. O valor "no período
+              // anterior" não existe como consulta direta na API (ela só expõe a variação
+              // diária, não o total histórico) — é derivado subtraindo esse saldo do total
+              // atual, o que dá o nº de seguidores exatamente no fim do período de comparação.
+              const row = (followerInsights.data || [])[0];
+              if (row) {
+                followerDelta = (row.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
+                previousFollowers = Number(profile.followers_count) - followerDelta;
+              }
+            }
           } catch (e) {
-            // Guarda o erro real em vez de só engolir: já tentamos dois formatos de data
-            // (string e timestamp Unix) e continua falhando, então precisamos ver a mensagem
-            // de verdade da API pra saber o que ela está rejeitando, em vez de chutar de novo.
+            // Guarda o erro real (agora com a mensagem de verdade vinda da Graph API, não o
+            // texto genérico do client da Supabase) em vez de só engolir.
             followerError = e?.message || String(e);
           }
 
@@ -1713,6 +1751,12 @@ async function renderReport() {
             el("div", { class: "stat-label" }, "Seguidores"),
             el("div", { class: "stat-value" }, fmtNumber(profile.followers_count)),
           ]));
+          if (previousFollowers != null) {
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Seguidores no período anterior"),
+              el("div", { class: "stat-value" }, fmtNumber(previousFollowers)),
+            ]));
+          }
           if (followerDelta != null) {
             igGrid.appendChild(el("div", { class: "stat-tile" }, [
               el("div", { class: "stat-label" }, "Seguidores ganhos/perdidos"),

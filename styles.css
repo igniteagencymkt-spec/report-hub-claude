@@ -293,6 +293,16 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
   gap: 14px;
   margin-bottom: 24px;
 }
+/* As 3 métricas principais (Investimento, Leads, Custo por lead) ficam sozinhas numa
+   primeira linha, maiores — pra dar destaque visual antes da segunda linha com o resto. */
+.stat-grid-primary {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 14px;
+}
+@media (max-width: 640px) {
+  .stat-grid-primary { grid-template-columns: 1fr; }
+}
 .stat-tile {
   background: #f8f9fd;
   border: 1px solid var(--border);
@@ -300,6 +310,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
   padding: 16px 18px;
   overflow: hidden; /* rede de segurança: nunca deixa o valor vazar pra fora do box arredondado */
 }
+.stat-tile-lg {
+  padding: 22px 24px;
+}
+.stat-tile-lg .stat-label { font-size: 12px; }
+.stat-tile-lg .stat-value { font-size: 30px; }
 .stat-label {
   font-size: 11px;
   text-transform: uppercase;
