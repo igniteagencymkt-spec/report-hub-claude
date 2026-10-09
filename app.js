@@ -1589,7 +1589,7 @@ async function renderReport() {
           const sinceTs = Math.floor(new Date(`${range.since}T00:00:00Z`).getTime() / 1000);
           const untilTs = Math.floor(new Date(`${range.until}T23:59:59Z`).getTime() / 1000);
 
-          let reachTotal = null, profileViewsTotal = null, followerDelta = null;
+          let reachTotal = null, profileViewsTotal = null, followerDelta = null, followerError = null;
           // Pedidos separados (não um só com os 3 métricas juntas): a API da Meta passou a
           // exigir "metric_type=time_series" pra devolver o valor por dia (sem isso, alguns
           // metrics vêm só com o total agregado ou a chamada falha quando combinada com
@@ -1623,8 +1623,11 @@ async function renderReport() {
             // inteiro dá o saldo líquido de seguidores ganhos/perdidos.
             const row = (followerInsights.data || [])[0];
             if (row) followerDelta = (row.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
-          } catch {
-            // Algumas contas/versões da API não liberam follower_count — segue sem essa métrica.
+          } catch (e) {
+            // Guarda o erro real em vez de só engolir: já tentamos dois formatos de data
+            // (string e timestamp Unix) e continua falhando, então precisamos ver a mensagem
+            // de verdade da API pra saber o que ela está rejeitando, em vez de chutar de novo.
+            followerError = e?.message || String(e);
           }
 
           // Busca as publicações do período (posts e reels) pra "Destaques do Instagram":
@@ -1714,6 +1717,14 @@ async function renderReport() {
             igGrid.appendChild(el("div", { class: "stat-tile" }, [
               el("div", { class: "stat-label" }, "Seguidores ganhos/perdidos"),
               el("div", { class: "stat-value" }, `${followerDelta > 0 ? "+" : ""}${fmtNumber(followerDelta)}`),
+            ]));
+          } else if (followerError) {
+            // Mostra o erro real da API em vez de só esconder a métrica — já tentamos dois
+            // formatos de data sem sucesso, então precisamos ver a mensagem de verdade pra
+            // saber o que corrigir, em vez de continuar chutando às cegas.
+            igGrid.appendChild(el("div", { class: "stat-tile" }, [
+              el("div", { class: "stat-label" }, "Seguidores ganhos/perdidos"),
+              el("div", { class: "stat-value", style: "font-size:11px;color:#c0392b;font-weight:500;" }, followerError),
             ]));
           }
           if (postsInPeriod != null) {
