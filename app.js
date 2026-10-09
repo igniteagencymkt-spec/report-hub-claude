@@ -27,7 +27,7 @@ const METRIC_DEFS = [
   { key: "clicks", label: "Cliques no link" },
   { key: "cpc", label: "CPC médio" },
   { key: "cpm", label: "CPM médio" },
-  { key: "platform_breakdown", label: "Leads por plataforma" },
+  { key: "platform_breakdown", label: "Métricas por plataforma (Facebook x Instagram: leads, custo por lead, CTR, CPC, CPM, cliques no link)" },
   { key: "gender_breakdown", label: "Leads por gênero" },
   { key: "age_breakdown", label: "Leads por faixa etária" },
   { key: "leads_by_day", label: "Leads por dia (evolução)" },
@@ -143,18 +143,23 @@ function getPreviousRange(since, until) {
   return { since: fmtDate(prevSince), until: fmtDate(prevUntil) };
 }
 
-// "up" decide a cor/seta do badge (verde = bom, vermelho = ruim) — não é sempre "aumentou".
-// Pra métricas de custo (custo por lead, CPC, CPM) é o contrário: subir é ruim, cair é bom.
-// Passe invert:true pra essas.
-function deltaBadge(current, previous, invert = false) {
+// A seta (▲/▼) mostra a direção REAL do valor (subiu ou caiu) — isso nunca muda.
+// A cor é separada: reflete se subir é bom ou ruim pra aquela métrica específica.
+//   mode "normal" (padrão): subir = bom/verde (ex.: investimento, leads, CTR, cliques no link)
+//   mode "invert": subir = ruim/vermelho, cair = bom/verde (ex.: custo por lead, CPC)
+//   mode "neutral": nunca pinta verde/vermelho — fica sempre cinza (ex.: CPM, métrica "menos importante")
+function deltaBadge(current, previous, mode = "normal") {
   if (previous == null || previous === 0) {
     if (!current) return null;
-    return { text: "novo", up: !invert };
+    return { text: "novo", increased: true, good: mode === "neutral" ? null : mode !== "invert" };
   }
   const pct = ((current - previous) / Math.abs(previous)) * 100;
-  if (Math.abs(pct) < 0.01) return { text: "0%", up: true };
-  const increased = pct > 0;
-  return { text: `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`, up: invert ? !increased : increased };
+  const increased = pct >= 0;
+  if (Math.abs(pct) < 0.01) {
+    return { text: "0%", increased: true, good: mode === "neutral" ? null : true };
+  }
+  const good = mode === "neutral" ? null : (mode === "invert" ? !increased : increased);
+  return { text: `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`, increased, good };
 }
 
 let state = {
@@ -222,6 +227,47 @@ function el(tag, attrs = {}, children = []) {
     node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   }
   return node;
+}
+
+// Monta uma <table> cujo cabeçalho é clicável: clicar numa coluna ordena os dados por ela
+// (crescente, depois decrescente a cada novo clique), sem precisar buscar nada de novo na
+// Meta — é só reordenar as linhas já carregadas. Usado em "Métricas por plataforma",
+// "Anúncios em destaque" e "Leads por região".
+function sortableTable({ className = "region-table", columns, rows }) {
+  let sortIdx = null, sortDir = 1;
+  const tbody = el("tbody");
+  function renderRows() {
+    tbody.innerHTML = "";
+    let list = rows;
+    if (sortIdx != null) {
+      const col = columns[sortIdx];
+      list = [...rows].sort((a, b) => {
+        const av = col.value(a), bv = col.value(b);
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        if (typeof av === "string") return av.localeCompare(bv, "pt-BR") * sortDir;
+        return (av - bv) * sortDir;
+      });
+    }
+    for (const row of list) {
+      tbody.appendChild(el("tr", {}, columns.map((c) => el("td", {}, c.cell(row)))));
+    }
+  }
+  const theadRow = el("tr");
+  columns.forEach((c, i) => {
+    const arrow = el("span", { class: "sort-arrow" }, "");
+    const th = el("th", { style: "cursor:pointer;user-select:none;white-space:nowrap;" }, [c.label, arrow]);
+    th.addEventListener("click", () => {
+      if (sortIdx === i) sortDir = -sortDir; else { sortIdx = i; sortDir = 1; }
+      theadRow.querySelectorAll(".sort-arrow").forEach((a) => { a.textContent = ""; });
+      arrow.textContent = sortDir === 1 ? " ▲" : " ▼";
+      renderRows();
+    });
+    theadRow.appendChild(th);
+  });
+  renderRows();
+  return el("table", { class: className }, [el("thead", {}, [theadRow]), tbody]);
 }
 
 function toast(msg, isError = false) {
@@ -1135,6 +1181,8 @@ async function renderReport() {
   $("#report-title").textContent = state.reportConfig?.report_title
     || (client?.name ? `${client.name} — Relatório de performance` : "Relatório de performance");
   $("#report-subtitle").textContent = state.reportConfig?.report_subtitle || `Período: ${periodLabel}`;
+  $("#report-period-line").textContent =
+    `Período: ${fmtBR(range.since)} a ${fmtBR(range.until)} · Comparado com: ${fmtBR(prevRange.since)} a ${fmtBR(prevRange.until)}`;
   const timeRangeParam = JSON.stringify(range);
 
   try {
@@ -1334,11 +1382,11 @@ async function renderReport() {
     if (metrics.has("leads")) tileDefs.push(["Leads", fmtNumber(totalLeads), deltaBadge(totalLeads, prevLeads)]);
     // Custo (custo por lead, CPC, CPM): subir é ruim, cair é bom — por isso invert:true.
     // Volume/taxa (leads, CTR, cliques no link): subir é bom, cair é ruim — fica como está.
-    if (metrics.has("cpl")) tileDefs.push(["Custo por lead", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl, true) : null]);
+    if (metrics.has("cpl")) tileDefs.push(["Custo por lead", cpl != null ? fmtMoney(cpl, currency) : "—", cpl != null && prevCpl != null ? deltaBadge(cpl, prevCpl, "invert") : null]);
     if (metrics.has("ctr")) tileDefs.push(["CTR", fmtPct(ctr), ctr != null && prevCtr != null ? deltaBadge(ctr, prevCtr) : null]);
     if (metrics.has("clicks")) tileDefs.push(["Cliques no link", fmtNumber(totalClicks), deltaBadge(totalClicks, prevClicks)]);
-    if (metrics.has("cpc")) tileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc, true) : null]);
-    if (metrics.has("cpm")) tileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm, true) : null]);
+    if (metrics.has("cpc")) tileDefs.push(["CPC médio", cpc != null ? fmtMoney(cpc, currency) : "—", cpc != null && prevCpc != null ? deltaBadge(cpc, prevCpc, "invert") : null]);
+    if (metrics.has("cpm")) tileDefs.push(["CPM médio", cpm != null ? fmtMoney(cpm, currency) : "—", cpm != null && prevCpm != null ? deltaBadge(cpm, prevCpm, "neutral") : null]);
     for (const ce of customEvents) {
       tileDefs.push([ce.label, fmtNumber(customTotals.get(ce.action_type) || 0), null]);
     }
@@ -1348,7 +1396,10 @@ async function renderReport() {
         grid.appendChild(el("div", { class: "stat-tile" }, [
           el("div", { class: "stat-label" }, label),
           el("div", { class: "stat-value" }, value),
-          delta ? el("div", { class: "stat-delta " + (delta.up ? "up" : "down") }, (delta.up ? "▲ " : "▼ ") + delta.text) : null,
+          delta
+            ? el("div", { class: "stat-delta " + (delta.good === null ? "neutral" : delta.good ? "up" : "down") },
+                (delta.increased ? "▲ " : "▼ ") + delta.text)
+            : null,
         ]));
       }
       body.appendChild(grid);
@@ -1385,26 +1436,27 @@ async function renderReport() {
     if (metrics.has("platform_breakdown") && platformMap.size) {
       const card = el("div", { class: "card" });
       card.appendChild(el("div", { class: "card-title" }, "Métricas por plataforma"));
-      const table = el("table", { class: "region-table" });
-      table.appendChild(el("tr", {}, [
-        el("th", {}, "Plataforma"), el("th", {}, "Leads"), el("th", {}, "Custo por lead"), el("th", {}, "CTR"),
-        el("th", {}, "CPC"), el("th", {}, "CPM"), el("th", {}, "Cliques no link"),
-      ]));
-      for (const [platform, v] of platformMap.entries()) {
-        const pCpl = v.leads > 0 ? v.spend / v.leads : null;
-        const pCtr = v.impressions > 0 ? (v.clicks / v.impressions) * 100 : null;
-        const pCpc = v.clicks > 0 ? v.spend / v.clicks : null;
-        const pCpm = v.impressions > 0 ? (v.spend / v.impressions) * 1000 : null;
-        table.appendChild(el("tr", {}, [
-          el("td", {}, platformLabel(platform)),
-          el("td", {}, fmtNumber(v.leads)),
-          el("td", {}, pCpl != null ? fmtMoney(pCpl, currency) : "—"),
-          el("td", {}, fmtPct(pCtr)),
-          el("td", {}, pCpc != null ? fmtMoney(pCpc, currency) : "—"),
-          el("td", {}, pCpm != null ? fmtMoney(pCpm, currency) : "—"),
-          el("td", {}, fmtNumber(v.clicks)),
-        ]));
-      }
+      const platformRows = [...platformMap.entries()].map(([platform, v]) => ({
+        platform,
+        leads: v.leads,
+        clicks: v.clicks,
+        pCpl: v.leads > 0 ? v.spend / v.leads : null,
+        pCtr: v.impressions > 0 ? (v.clicks / v.impressions) * 100 : null,
+        pCpc: v.clicks > 0 ? v.spend / v.clicks : null,
+        pCpm: v.impressions > 0 ? (v.spend / v.impressions) * 1000 : null,
+      }));
+      const table = sortableTable({
+        rows: platformRows,
+        columns: [
+          { label: "Plataforma", value: (r) => platformLabel(r.platform), cell: (r) => platformLabel(r.platform) },
+          { label: "Leads", value: (r) => r.leads, cell: (r) => fmtNumber(r.leads) },
+          { label: "Custo por lead", value: (r) => r.pCpl, cell: (r) => (r.pCpl != null ? fmtMoney(r.pCpl, currency) : "—") },
+          { label: "CTR", value: (r) => r.pCtr, cell: (r) => fmtPct(r.pCtr) },
+          { label: "CPC", value: (r) => r.pCpc, cell: (r) => (r.pCpc != null ? fmtMoney(r.pCpc, currency) : "—") },
+          { label: "CPM", value: (r) => r.pCpm, cell: (r) => (r.pCpm != null ? fmtMoney(r.pCpm, currency) : "—") },
+          { label: "Cliques no link", value: (r) => r.clicks, cell: (r) => fmtNumber(r.clicks) },
+        ],
+      });
       card.appendChild(el("div", { class: "table-scroll" }, [table]));
       body.appendChild(card);
     }
@@ -1460,36 +1512,26 @@ async function renderReport() {
       if (!creatives.length) {
         card.appendChild(el("div", { class: "empty-state" }, "Nenhum anúncio ativo com dados no período."));
       } else {
-        const table = el("table", { class: "region-table" });
-        table.appendChild(el("tr", {}, [
-          el("th", {}, "Anúncio"),
-          el("th", {}, "Leads"),
-          el("th", {}, "Custo por lead"),
-          el("th", {}, "Investimento"),
-          el("th", {}, "CTR"),
-          el("th", {}, "CPC"),
-          el("th", {}, "CPM"),
-          el("th", {}, "Frequência"),
-        ]));
-        for (const c of creatives) {
-          const costPerLead = c.leads > 0 ? c.spend / c.leads : null;
-          const nameCell = el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;max-width:170px;" }, [
-            c.thumb
-              ? el("img", { src: c.thumb, alt: "", style: "width:28px;height:28px;border-radius:6px;object-fit:cover;flex-shrink:0;" })
-              : el("div", { style: "width:28px;height:28px;border-radius:6px;background:#eef1f7;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:8px;color:#94a3b8;" }, "—"),
-            el("span", { style: "font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;", title: c.name || "" }, c.name || "—"),
-          ]);
-          table.appendChild(el("tr", {}, [
-            el("td", {}, nameCell),
-            el("td", {}, fmtNumber(c.leads)),
-            el("td", {}, costPerLead != null ? fmtMoney(costPerLead, currency) : "—"),
-            el("td", {}, fmtMoney(c.spend, currency)),
-            el("td", {}, fmtPct(c.ctr)),
-            el("td", {}, c.cpc != null ? fmtMoney(c.cpc, currency) : "—"),
-            el("td", {}, c.cpm != null ? fmtMoney(c.cpm, currency) : "—"),
-            el("td", {}, c.frequency != null ? c.frequency.toFixed(2) : "—"),
-          ]));
-        }
+        const adRows = creatives.map((c) => ({ ...c, costPerLead: c.leads > 0 ? c.spend / c.leads : null }));
+        const nameCellFor = (c) => el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;max-width:170px;" }, [
+          c.thumb
+            ? el("img", { src: c.thumb, alt: "", style: "width:28px;height:28px;border-radius:6px;object-fit:cover;flex-shrink:0;" })
+            : el("div", { style: "width:28px;height:28px;border-radius:6px;background:#eef1f7;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:8px;color:#94a3b8;" }, "—"),
+          el("span", { style: "font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;", title: c.name || "" }, c.name || "—"),
+        ]);
+        const table = sortableTable({
+          rows: adRows,
+          columns: [
+            { label: "Anúncio", value: (c) => c.name || "", cell: (c) => nameCellFor(c) },
+            { label: "Leads", value: (c) => c.leads, cell: (c) => fmtNumber(c.leads) },
+            { label: "Custo por lead", value: (c) => c.costPerLead, cell: (c) => (c.costPerLead != null ? fmtMoney(c.costPerLead, currency) : "—") },
+            { label: "Investimento", value: (c) => c.spend, cell: (c) => fmtMoney(c.spend, currency) },
+            { label: "CTR", value: (c) => c.ctr, cell: (c) => fmtPct(c.ctr) },
+            { label: "CPC", value: (c) => c.cpc, cell: (c) => (c.cpc != null ? fmtMoney(c.cpc, currency) : "—") },
+            { label: "CPM", value: (c) => c.cpm, cell: (c) => (c.cpm != null ? fmtMoney(c.cpm, currency) : "—") },
+            { label: "Frequência", value: (c) => c.frequency, cell: (c) => (c.frequency != null ? c.frequency.toFixed(2) : "—") },
+          ],
+        });
         card.appendChild(el("div", { class: "table-scroll" }, [table]));
       }
       body.appendChild(card);
@@ -1503,31 +1545,31 @@ async function renderReport() {
         card.appendChild(el("div", { class: "empty-state" }, "Sem dados de região no período."));
       } else {
         const maxLeads = Math.max(...regionsSorted.map((r) => r.leads), 1);
-        const table = el("table", { class: "region-table" });
-        table.appendChild(el("tr", {}, [
-          el("th", {}, "Região"),
-          el("th", {}, "Leads"),
-          el("th", {}, "Custo por lead"),
-          el("th", {}, "CTR"),
-          el("th", {}, "Cliques no link"),
-          el("th", {}, "Custo por clique"),
-          el("th", {}, "Investimento"),
-        ]));
-        for (const r of regionsSorted) {
+        const regionRows = regionsSorted.map((r) => ({
+          ...r,
+          regionCpl: r.leads > 0 ? r.spend / r.leads : null,
+          regionCpc: r.clicks > 0 ? r.spend / r.clicks : null,
+          regionCtr: r.impressions > 0 ? (r.clicks / r.impressions) * 100 : null,
+        }));
+        const leadsBarCell = (r) => {
           const barWidth = Math.max(4, Math.round((r.leads / maxLeads) * 60));
-          const regionCpl = r.leads > 0 ? r.spend / r.leads : null;
-          const regionCpc = r.clicks > 0 ? r.spend / r.clicks : null;
-          const regionCtr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : null;
-          table.appendChild(el("tr", {}, [
-            el("td", {}, r.region),
-            el("td", {}, [el("span", { class: "rank-bar", style: `width:${barWidth}px;` }), fmtNumber(r.leads)]),
-            el("td", {}, regionCpl != null ? fmtMoney(regionCpl, currency) : "—"),
-            el("td", {}, fmtPct(regionCtr)),
-            el("td", {}, fmtNumber(r.clicks)),
-            el("td", {}, regionCpc != null ? fmtMoney(regionCpc, currency) : "—"),
-            el("td", {}, fmtMoney(r.spend, currency)),
-          ]));
-        }
+          return el("div", { style: "display:flex;align-items:center;gap:6px;white-space:nowrap;" }, [
+            el("span", { class: "rank-bar", style: `width:${barWidth}px;flex-shrink:0;` }),
+            el("span", {}, fmtNumber(r.leads)),
+          ]);
+        };
+        const table = sortableTable({
+          rows: regionRows,
+          columns: [
+            { label: "Região", value: (r) => r.region, cell: (r) => r.region },
+            { label: "Leads", value: (r) => r.leads, cell: (r) => leadsBarCell(r) },
+            { label: "Custo por lead", value: (r) => r.regionCpl, cell: (r) => (r.regionCpl != null ? fmtMoney(r.regionCpl, currency) : "—") },
+            { label: "CTR", value: (r) => r.regionCtr, cell: (r) => fmtPct(r.regionCtr) },
+            { label: "Cliques no link", value: (r) => r.clicks, cell: (r) => fmtNumber(r.clicks) },
+            { label: "Custo por clique", value: (r) => r.regionCpc, cell: (r) => (r.regionCpc != null ? fmtMoney(r.regionCpc, currency) : "—") },
+            { label: "Investimento", value: (r) => r.spend, cell: (r) => fmtMoney(r.spend, currency) },
+          ],
+        });
         card.appendChild(el("div", { class: "table-scroll" }, [table]));
       }
       body.appendChild(card);

@@ -231,25 +231,30 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
   margin-bottom: 24px;
 }
 .report-header #report-logo {
-  width: 96px;
-  height: 96px;
-  min-width: 96px;
-  min-height: 96px;
+  width: 128px;
+  height: 128px;
+  min-width: 128px;
+  min-height: 128px;
   border-radius: 50%;
   object-fit: cover;
   border: 1px solid var(--border);
 }
 .report-title {
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 30px;
   font-weight: 700;
   color: var(--ink);
   margin: 0 0 4px;
 }
 .report-subtitle {
-  font-size: 13px;
+  font-size: 15px;
   color: var(--mist);
   margin: 0;
+}
+.report-period-line {
+  font-size: 12px;
+  color: var(--mist);
+  margin: 6px 0 0;
 }
 .card-title {
   font-family: var(--font-display);
@@ -318,6 +323,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
 .stat-delta { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; margin-left: 6px; }
 .stat-delta.up { color: var(--good); background: rgba(31,157,108,0.12); }
 .stat-delta.down { color: var(--danger); background: rgba(192,57,43,0.1); }
+.stat-delta.neutral { color: #64748b; background: rgba(100,116,139,0.12); }
 
 /* ---------- Charts ---------- */
 .chart-grid {
@@ -334,6 +340,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
    do que cabe na largura do card, ela ganha scroll em vez de ser cortada em silêncio. */
 .table-scroll { overflow-x: auto; }
 table.region-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.region-table th:hover { color: var(--ink); }
+table.region-table th .sort-arrow { color: var(--gold-bright); font-size: 9px; }
 table.region-table th {
   text-align: left;
   font-size: 10.5px;
