@@ -167,11 +167,20 @@ let state = {
 // Ícones de origem (selo "Métricas de X"), como no relatório de referência.
 // Monocromáticos/simplificados — identificam a plataforma de forma factual,
 // sem reproduzir arte de marca.
-const META_ICON_SVG = `<svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="18" cy="18" r="18" fill="#0866FF"/>
-  <path d="M20.1 18.4h2.6l.4-3h-3V13.8c0-.87.24-1.46 1.5-1.46h1.6V9.65c-.28-.04-1.23-.12-2.34-.12-2.32 0-3.9 1.4-3.9 3.98v2.44h-2.6v3h2.6v8.2h3.14z" fill="#fff"/>
+// Selo genérico "Métricas de Meta Ads" (cobre Facebook + Instagram ads) — usa o
+// símbolo do infinito da Meta, não o "f" do Facebook (esse é só pra login/app do FB).
+const META_ICON_SVG = `<svg viewBox="0 0 36 36" width="20" height="20" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="metaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0081FB"/>
+      <stop offset="100%" stop-color="#00B2FF"/>
+    </linearGradient>
+  </defs>
+  <circle cx="18" cy="18" r="18" fill="#f0f4ff"/>
+  <circle cx="13.5" cy="18" r="6" fill="none" stroke="url(#metaGrad)" stroke-width="3"/>
+  <circle cx="22.5" cy="18" r="6" fill="none" stroke="url(#metaGrad)" stroke-width="3"/>
 </svg>`;
-const INSTAGRAM_ICON_SVG = `<svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+const INSTAGRAM_ICON_SVG = `<svg viewBox="0 0 36 36" width="20" height="20" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <radialGradient id="igGrad" cx="30%" cy="107%" r="150%">
       <stop offset="0%" stop-color="#fdf497"/>
@@ -278,10 +287,13 @@ async function proxyImageToDataUrl(imageUrl) {
     const { data, error } = await sb.functions.invoke("meta-proxy", {
       body: { image_url: imageUrl },
     });
-    if (error || !data || data.error || !data.data_url) return imageUrl;
+    if (error || !data || data.error || !data.data_url) return null;
     return data.data_url;
   } catch {
-    return imageUrl;
+    // Se o proxy falhar (ex.: a URL assinada da Meta já expirou), devolve null em vez da
+    // URL original — a original ia só gerar um ícone de "imagem quebrada" na tela e no PDF.
+    // Com null, quem chama mostra o placeholder "sem thumb" no lugar.
+    return null;
   }
 }
 
@@ -1427,7 +1439,9 @@ async function renderReport() {
         for (const c of creatives) {
           const costPerLead = c.leads > 0 ? c.spend / c.leads : null;
           const nameCell = el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;max-width:170px;" }, [
-            c.thumb ? el("img", { src: c.thumb, alt: "", style: "width:28px;height:28px;border-radius:6px;object-fit:cover;flex-shrink:0;" }) : null,
+            c.thumb
+              ? el("img", { src: c.thumb, alt: "", style: "width:28px;height:28px;border-radius:6px;object-fit:cover;flex-shrink:0;" })
+              : el("div", { style: "width:28px;height:28px;border-radius:6px;background:#eef1f7;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:8px;color:#94a3b8;" }, "—"),
             el("span", { style: "font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;", title: c.name || "" }, c.name || "—"),
           ]);
           table.appendChild(el("tr", {}, [
@@ -1489,10 +1503,16 @@ async function renderReport() {
             fields: "username,followers_count,media_count,profile_picture_url",
           });
           let reachTotal = null, profileViewsTotal = null, followerDelta = null;
+          // Pedidos separados (não um só com os 3 métricas juntas): a API da Meta passou a
+          // exigir "metric_type=time_series" pra devolver o valor por dia (sem isso, alguns
+          // metrics vêm só com o total agregado ou a chamada falha quando combinada com
+          // follower_count, que tem regras próprias) — e se vier tudo numa chamada só, um
+          // metric rejeitado derruba a resposta inteira e nenhuma das três aparece.
           try {
             const igInsights = await metaCall(ig.access_token, `${ig.account_id}/insights`, {
-              metric: "reach,profile_views,follower_count",
+              metric: "reach,profile_views",
               period: "day",
+              metric_type: "time_series",
               since: range.since,
               until: range.until,
             });
@@ -1500,12 +1520,24 @@ async function renderReport() {
               const sum = (m.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
               if (m.name === "reach") reachTotal = sum;
               if (m.name === "profile_views") profileViewsTotal = sum;
-              // "follower_count" por dia vem como a variação (ganho/perda) daquele dia —
-              // somando o período inteiro dá o saldo de seguidores ganhos/perdidos.
-              if (m.name === "follower_count") followerDelta = sum;
             }
           } catch {
-            // Conta recém-conectada ou sem permissão de insights ainda — mostra só o perfil.
+            // Conta recém-conectada ou sem permissão de insights ainda — segue sem essas duas.
+          }
+          try {
+            const followerInsights = await metaCall(ig.access_token, `${ig.account_id}/insights`, {
+              metric: "follower_count",
+              period: "day",
+              metric_type: "time_series",
+              since: range.since,
+              until: range.until,
+            });
+            // Cada dia vem com a variação (ganho/perda) daquele dia — somando o período
+            // inteiro dá o saldo líquido de seguidores ganhos/perdidos.
+            const row = (followerInsights.data || [])[0];
+            if (row) followerDelta = (row.values || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
+          } catch {
+            // Algumas contas/versões da API não liberam follower_count — segue sem essa métrica.
           }
 
           // Busca as publicações do período (posts e reels) pra "Destaques do Instagram":
@@ -1528,16 +1560,31 @@ async function renderReport() {
             const enriched = [];
             for (const m of items) {
               const isReel = m.media_product_type === "REELS";
-              const metricList = isReel ? "reach,likes,comments,shares,saved,plays" : "reach,likes,comments,shares,saved";
+              // Pede as métricas básicas e, pra reels, "plays" numa chamada separada: se
+              // "plays" for rejeitado pra algum reel específico (métrica nova, varia por
+              // sub-tipo), só essa parte falha — o item não é descartado inteiro por causa
+              // disso (era o que fazia "Top 5 reels" sair vazio).
               let ins = {};
               try {
-                const insRes = await metaCall(ig.access_token, `${m.id}/insights`, { metric: metricList });
-                for (const row of insRes.data || []) {
+                const baseRes = await metaCall(ig.access_token, `${m.id}/insights`, {
+                  metric: "reach,likes,comments,shares,saved",
+                });
+                for (const row of baseRes.data || []) {
                   ins[row.name] = (row.values && row.values[0] && row.values[0].value) || 0;
                 }
               } catch {
-                // Alguns formatos antigos (ex. álbum) não aceitam todas as métricas — ignora esse item.
+                // Nem as métricas básicas vieram (ex. formato muito antigo) — ignora esse item.
                 continue;
+              }
+              if (isReel) {
+                try {
+                  const playsRes = await metaCall(ig.access_token, `${m.id}/insights`, { metric: "plays" });
+                  for (const row of playsRes.data || []) {
+                    ins[row.name] = (row.values && row.values[0] && row.values[0].value) || 0;
+                  }
+                } catch {
+                  // Sem "plays" pra esse reel — usa alcance como critério de ordenação (abaixo).
+                }
               }
               savesTotal += Number(ins.saved || 0);
               enriched.push({
@@ -1546,7 +1593,7 @@ async function renderReport() {
                 caption: (m.caption || "").slice(0, 60),
                 thumb: m.thumbnail_url || (m.media_type === "IMAGE" ? m.media_url : null),
                 permalink: m.permalink,
-                views: isReel ? Number(ins.plays || 0) : Number(ins.reach || 0),
+                views: isReel ? Number(ins.plays || ins.reach || 0) : Number(ins.reach || 0),
                 reach: Number(ins.reach || 0),
                 likes: Number(ins.likes || 0),
                 comments: Number(ins.comments || 0),
