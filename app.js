@@ -39,6 +39,14 @@ const DEFAULT_METRICS = METRIC_DEFS.map((m) => m.key);
 const CHART_COLORS = ["#c9a66b", "#16263d", "#7fa6c9", "#e0bd85", "#1f9d6c", "#c0392b", "#64748b"];
 const chartInstances = {};
 
+// Dá ~15% de folga acima do maior valor da série, pro rótulo de valor desenhado em cima da
+// barra mais alta nunca encostar no teto do eixo e ficar cortado (ver valueLabelPlugin).
+function chartSuggestedMax(values) {
+  const max = Math.max(0, ...values.map((v) => Number(v) || 0));
+  if (max <= 0) return undefined;
+  return Math.ceil(max * 1.15);
+}
+
 function renderChart(canvasId, config) {
   if (chartInstances[canvasId]) chartInstances[canvasId].destroy();
   const ctx = document.getElementById(canvasId);
@@ -1512,8 +1520,15 @@ async function renderReport() {
         plugins: [valueLabelPlugin],
         options: {
           animation: false,
+          // Deixa ~15% de folga acima da maior barra — sem isso, quando a barra mais alta
+          // encosta no teto do eixo (seu valor = o próprio máximo do eixo), o número que o
+          // valueLabelPlugin escreve acima dela fica cortado pelo limite do canvas.
+          layout: { padding: { top: 20 } },
           plugins: { legend: { display: false } },
-          scales: { x: { ticks: { color: "#64748b" } }, y: { beginAtZero: true, ticks: { color: "#64748b" } } },
+          scales: {
+            x: { ticks: { color: "#64748b" } },
+            y: { beginAtZero: true, suggestedMax: chartSuggestedMax(dailySorted.map(([, v]) => v)), ticks: { color: "#64748b" } },
+          },
         },
       });
     }
@@ -1534,8 +1549,12 @@ async function renderReport() {
         plugins: [valueLabelPlugin],
         options: {
           animation: false,
+          layout: { padding: { top: 20 } },
           plugins: { legend: { display: false } },
-          scales: { x: { ticks: { color: "#64748b" } }, y: { beginAtZero: true, ticks: { color: "#64748b" } } },
+          scales: {
+            x: { ticks: { color: "#64748b" } },
+            y: { beginAtZero: true, suggestedMax: chartSuggestedMax(agesSorted.map(([, v]) => v)), ticks: { color: "#64748b" } },
+          },
         },
       });
     }
