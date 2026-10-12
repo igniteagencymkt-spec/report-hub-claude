@@ -303,6 +303,13 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--g
 @media (max-width: 640px) {
   .stat-grid-primary { grid-template-columns: 1fr; }
 }
+/* Grades com um nº de métricas variável (ex. Instagram) ficam "feias" com o auto-fit padrão:
+   numa tela larga os cards esticam enormes e, quando sobra 1 card sozinho na última linha,
+   ele vira um retângulo gigante solto no meio do vazio. Travando uma largura máxima por
+   card, o card sozinho fica do mesmo tamanho que os outros, visualmente simétrico. */
+.stat-grid-compact {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 210px));
+}
 .stat-tile {
   background: #f8f9fd;
   border: 1px solid var(--border);

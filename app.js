@@ -356,18 +356,29 @@ async function realEdgeErrorMessage(error) {
 // silenciosamente ao gerar o PDF (html2canvas pula qualquer imagem cross-origin sem CORS).
 // Essa função baixa a imagem pelo nosso próprio proxy (servidor, sem restrição de CORS) e
 // devolve um data: URL — assim a imagem passa a ser "nossa" e o html2canvas consegue capturá-la.
-async function proxyImageToDataUrl(imageUrl) {
+// `diag`, se passado, recebe `.reason` com o motivo real da falha (em vez de só sumir
+// silenciosamente) — assim dá pra mostrar no placeholder por que a thumb não carregou,
+// em vez de ficar só adivinhando (mesma lógica usada pro erro de "seguidores ganhos/perdidos").
+async function proxyImageToDataUrl(imageUrl, diag) {
   if (!imageUrl) return null;
   try {
     const { data, error } = await sb.functions.invoke("meta-proxy", {
       body: { image_url: imageUrl },
     });
-    if (error || !data || data.error || !data.data_url) return null;
+    if (error) {
+      if (diag) diag.reason = await realEdgeErrorMessage(error);
+      return null;
+    }
+    if (!data || data.error || !data.data_url) {
+      if (diag) diag.reason = (data && data.error) || "Resposta vazia do proxy de imagem.";
+      return null;
+    }
     return data.data_url;
-  } catch {
+  } catch (e) {
     // Se o proxy falhar (ex.: a URL assinada da Meta já expirou), devolve null em vez da
     // URL original — a original ia só gerar um ícone de "imagem quebrada" na tela e no PDF.
     // Com null, quem chama mostra o placeholder "sem thumb" no lugar.
+    if (diag) diag.reason = e?.message || String(e);
     return null;
   }
 }
@@ -1716,11 +1727,16 @@ async function renderReport() {
               savesTotal += Number(ins.saved || 0);
               likesTotalPeriod += Number(ins.likes || 0);
               sharesTotalPeriod += Number(ins.shares || 0);
+              // "media_url" só é uma imagem de verdade pra posts/carrossel — pra VIDEO (reels e
+              // vídeos normais) ele aponta pro arquivo de vídeo, que não funciona num <img>, então
+              // nesse caso só thumbnail_url serve (e às vezes a Meta não devolve uma).
+              const thumbSource = m.thumbnail_url || (m.media_type !== "VIDEO" ? m.media_url : null);
               enriched.push({
                 id: m.id,
                 isReel,
                 caption: (m.caption || "").slice(0, 60),
-                thumb: m.thumbnail_url || (m.media_type === "IMAGE" ? m.media_url : null),
+                thumb: thumbSource,
+                thumbError: thumbSource ? null : "A Meta não forneceu uma miniatura pra essa publicação.",
                 permalink: m.permalink,
                 views: isReel ? Number(ins.plays || ins.reach || 0) : Number(ins.reach || 0),
                 reach: Number(ins.reach || 0),
@@ -1735,7 +1751,16 @@ async function renderReport() {
             topReels = enriched.filter((e) => e.isReel).sort((a, b) => b.views - a.views).slice(0, 5);
             await Promise.all(
               [...topPosts, ...topReels].map(async (p) => {
-                if (p.thumb) p.thumb = await proxyImageToDataUrl(p.thumb);
+                if (p.thumb) {
+                  const diag = {};
+                  const dataUrl = await proxyImageToDataUrl(p.thumb, diag);
+                  if (dataUrl) {
+                    p.thumb = dataUrl;
+                  } else {
+                    p.thumb = null;
+                    p.thumbError = diag.reason || "Falha ao carregar a miniatura.";
+                  }
+                }
               })
             );
           } catch {
@@ -1746,7 +1771,7 @@ async function renderReport() {
             el("span", { class: "source-badge-icon", html: INSTAGRAM_ICON_SVG }),
             `Instagram · @${profile.username}`,
           ]));
-          const igGrid = el("div", { class: "stat-grid" });
+          const igGrid = el("div", { class: "stat-grid stat-grid-compact" });
           igGrid.appendChild(el("div", { class: "stat-tile" }, [
             el("div", { class: "stat-label" }, "Seguidores"),
             el("div", { class: "stat-value" }, fmtNumber(profile.followers_count)),
@@ -1816,7 +1841,7 @@ async function renderReport() {
               grid.appendChild(el("div", { class: "creative-card" }, [
                 p.thumb
                   ? el("img", { src: p.thumb, alt: "" })
-                  : el("div", { style: "width:100%;aspect-ratio:1;background:#eef1f7;display:flex;align-items:center;justify-content:center;font-size:11px;color:#64748b;" }, "sem thumb"),
+                  : el("div", { style: "width:100%;aspect-ratio:1;background:#eef1f7;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px;font-size:10px;line-height:1.3;color:#64748b;" }, p.thumbError || "sem thumb"),
                 el("div", { class: "cc-body" }, [
                   el("div", { class: "cc-leads" }, `${p.isReel ? "Plays" : "Alcance"}: ${fmtNumber(p.views)}`),
                   el("div", { class: "small muted", html:
